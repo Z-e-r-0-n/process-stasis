@@ -5,19 +5,22 @@ it a PID and it builds a temporal family graph, streams resource telemetry,
 retains processes after exit, follows known surviving children, exposes deep
 procfs evidence, and exports a structured investigation session.
 
-Version `0.2.0` is read-only. It sends no signal and performs no containment,
+Version `0.3.0` is read-only. It sends no signal and performs no containment,
 injection, termination, or replay.
 
 ## Implemented desktop workflow
 
 1. Search by PID, task name, or command and select a visible process.
-2. Pin its identity to Linux boot ID, PID, and start-time ticks.
-3. Display visible ancestors and recursively visible descendants.
+2. Pin each tracked identity with a Linux pidfd when available, plus boot ID,
+   PID, and start-time ticks.
+3. Display visible ancestors as context and recursively track only the selected
+   process and its descendants.
 4. Sample the known family every 500 ms and infer spawn, exec, and exit events.
 5. Preserve exited nodes and follow known live descendants after focus-process exit.
 6. Inspect status, identity, executable hash, namespaces, descriptors, sockets,
    memory maps, I/O, cgroups, limits, and masked environment values.
-7. Record and export a private JSON investigation session.
+7. Record into an owner-only native journal and export a private JSON
+   investigation session.
 
 The exact collection fields, workflow, export shape, and limitations are in
 [`docs/DESKTOP-WORKFLOW.md`](docs/DESKTOP-WORKFLOW.md). The older `0.1` Python

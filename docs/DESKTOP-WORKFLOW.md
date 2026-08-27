@@ -1,6 +1,6 @@
 # Desktop observer workflow and collected data
 
-This document describes the implemented Process Stasis `0.2.0` desktop observer.
+This document describes the implemented Process Stasis `0.3.0` desktop observer.
 The older Python snapshot collector remains available and is documented in
 [`CURRENT-WORKFLOW.md`](CURRENT-WORKFLOW.md).
 
@@ -12,8 +12,8 @@ does not signal, pause, inject into, debug, contain, terminate, or modify the
 target.
 
 ```text
-choose PID -> pin identity -> discover family -> stream samples and inferred events
-           -> retain exited nodes -> inspect a selected node -> record/export JSON
+choose PID -> pin identity -> discover scoped family -> stream samples and inferred events
+           -> retain exited nodes -> inspect a selected node -> journal/export JSON
 ```
 
 No acknowledgement or investigation-reason form is required by the local UI.
@@ -23,13 +23,17 @@ authorized to inspect.
 ## Exact attach and tracking sequence
 
 1. The picker scans numeric `/proc` entries and reads each visible process.
-2. Selecting a row passes its PID to the native observer.
-3. The observer reads `/proc/PID/stat` and builds a stable key from
-   `boot ID + PID + process start-time ticks`.
+2. Selecting a row passes its PID and expected start-time ticks to the native
+   observer. Attach is rejected if the PID was recycled after the picker sample.
+3. The observer reads `/proc/PID/stat`, builds a stable key from
+   `boot ID + PID + process start-time ticks`, and attempts `pidfd_open` for each
+   tracked identity. Start time remains the fallback when pidfds are unavailable.
 4. It walks the current PPID chain to visible ancestors, then recursively
    discovers currently visible descendants.
-5. Every 500 ms it rescans procfs, updates metrics for known live identities, and
-   discovers processes whose current parent is a known live identity.
+5. Every 500 ms it rescans procfs, polls open pidfds, updates metrics for known
+   live identities, and discovers processes whose current parent is the selected
+   process or a known live descendant. Ancestors cannot expand collection to
+   their other children.
 6. A new child produces an inferred `spawn` event and a retained edge.
 7. A changed task name or executable symlink produces an inferred `exec` event.
 8. A missing stable identity produces an inferred `exit` event. Its last known
@@ -42,8 +46,12 @@ authorized to inspect.
     resulting file has mode `0600`.
 
 The pause button freezes only graph presentation. Collection continues. The
-record button stores one graph snapshot every two seconds plus lifecycle events;
-the latest snapshot and 15-minute UI telemetry buffer exist without recording.
+record button appends one graph snapshot every two seconds plus every lifecycle
+event to a native JSONL journal. The recording directory is mode `0700`, journal
+files are mode `0600`, data is synced at most every ten seconds and on stop, and
+recording stops at a 32 MiB safety limit. Recording can be paused and resumed in
+the same tracking session. The latest snapshot and 15-minute UI telemetry buffer
+still exist without recording.
 
 ## Live process-list fields
 
@@ -64,8 +72,9 @@ at 300 in the current UI.
 
 Each retained node contains its stable key; PID; PPID; retained parent key; task
 name; command; executable; UID and user; state; live/exited, focus, and ancestor
-flags; discovery and exit timestamps; age; CPU percentage; RSS; virtual memory;
-cumulative read/write bytes; thread count; and open-FD count.
+flags; identity guard (`pidfd+start-time` or `start-time`); discovery and exit
+timestamps; age; CPU percentage; RSS; virtual memory; cumulative read/write
+bytes; thread count; and open-FD count.
 
 Each snapshot contains the UTC sample time, sequence, root identity, root-live
 status, live/exited counts, all retained edges, and the polling limitation flag.
@@ -96,14 +105,14 @@ not successful empty evidence. Environment values are masked until revealed.
 
 ## Export structure
 
-Exported JSON uses `process-stasis/session-v0.2`:
+Exported JSON uses `process-stasis/session-v0.3`:
 
 ```text
 schema
 exportedAt
-collection { mode, intervalMs, inferredLifecycleEvents, limitations[] }
+collection { mode, intervalMs, inferredLifecycleEvents, identity, recording, limitations[] }
 target { pid, startTimeTicks, command }
-session { id, recordingStartedAt, latestSequence }
+session { id, recordingStartedAt, latestSequence, journal }
 latestSnapshot
 snapshots[]
 lifecycleEvents[]
@@ -119,11 +128,14 @@ a synchronized or shared directory unintentionally.
 The application reconstructs an **observed temporal process graph**, not an
 authoritative audit log.
 
-- The initial view includes the visible ancestor chain and recursively visible
-  descendants at attach time.
+- The initial view includes the visible ancestor chain as context and recursively
+  visible descendants at attach time.
+- After attach, only the selected identity and known descendants can introduce
+  new children; an ancestor's unrelated children are explicitly out of scope.
 - Later edges are inferred from repeated PPID observations.
 - Exited identities and observed edges remain available.
-- PID reuse is distinguished by start-time ticks.
+- PID reuse is distinguished by pidfd identity when available and always checked
+  against start-time ticks.
 - A process that starts and exits entirely between scans can be missed.
 - A process reparented before a scan may appear without its original edge.
 - `exec` is inferred from visible changes and can miss a short-lived image.
@@ -131,7 +143,7 @@ authoritative audit log.
 These limits are displayed and written into every export. Kernel event tracing
 is a planned upgrade, not an implemented claim.
 
-## Explicit non-features in version 0.2
+## Explicit non-features in version 0.3
 
 - no syscall, library-call, packet, DNS, or file-content capture;
 - no memory dump, stack unwind, or core dump;

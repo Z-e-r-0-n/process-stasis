@@ -23,6 +23,7 @@ export interface ProcessNode extends ProcessListItem {
   alive: boolean;
   isFocus: boolean;
   isAncestor: boolean;
+  identityGuard: string;
   discoveredAt: string;
   exitedAt?: string;
   cpuPercent: number;
@@ -68,6 +69,23 @@ export interface LifecycleEvent {
 export type TrackingMessage =
   | { type: "snapshot"; payload: GraphSnapshot }
   | { type: "event"; payload: LifecycleEvent };
+
+export interface RecordingInfo {
+  sessionId: string;
+  fileName: string;
+  startedAt: string;
+  active: boolean;
+  snapshotCount: number;
+  eventCount: number;
+  byteCount: number;
+  error?: string;
+}
+
+export interface RecordedCapture {
+  info: RecordingInfo;
+  snapshots: GraphSnapshot[];
+  lifecycleEvents: LifecycleEvent[];
+}
 
 export interface FileDescriptor {
   fd: number;

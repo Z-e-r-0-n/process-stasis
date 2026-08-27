@@ -25,7 +25,7 @@ pub struct ProcessListItem {
     pub age_seconds: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessNode {
     pub key: ProcessKey,
@@ -40,6 +40,7 @@ pub struct ProcessNode {
     pub alive: bool,
     pub is_focus: bool,
     pub is_ancestor: bool,
+    pub identity_guard: String,
     pub discovered_at: String,
     pub exited_at: Option<String>,
     pub age_seconds: f64,
@@ -52,7 +53,7 @@ pub struct ProcessNode {
     pub fd_count: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphEdge {
     pub id: String,
@@ -63,7 +64,7 @@ pub struct GraphEdge {
     pub current: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphSnapshot {
     pub session_id: String,
@@ -78,7 +79,7 @@ pub struct GraphSnapshot {
     pub missed_event_warning: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LifecycleEvent {
     pub id: String,
@@ -91,11 +92,32 @@ pub struct LifecycleEvent {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "camelCase")]
 pub enum TrackingMessage {
     Snapshot(GraphSnapshot),
     Event(LifecycleEvent),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingInfo {
+    pub session_id: String,
+    pub file_name: String,
+    pub started_at: String,
+    pub active: bool,
+    pub snapshot_count: u64,
+    pub event_count: u64,
+    pub byte_count: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedCapture {
+    pub info: RecordingInfo,
+    pub snapshots: Vec<GraphSnapshot>,
+    pub lifecycle_events: Vec<LifecycleEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]

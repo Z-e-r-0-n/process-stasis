@@ -63,7 +63,7 @@ function Overview({ process, details }: { process: ProcessNode; details?: Proces
     </div></Section>
     <Section title="Identity"><KeyValues values={[
       ["Executable", details?.executable ?? process.executable ?? "unavailable"], ["SHA-256", details?.executableSha256 ?? "collecting…"],
-      ["Working dir", details?.cwd ?? "unavailable"], ["Parent PID", String(process.ppid)], ["Start ticks", String(process.key.startTimeTicks)],
+      ["Identity guard", process.identityGuard], ["Working dir", details?.cwd ?? "unavailable"], ["Parent PID", String(process.ppid)], ["Start ticks", String(process.key.startTimeTicks)],
     ]} /></Section>
     <Section title="Namespaces"><div className="namespace-grid">{details?.namespaces.map((entry) => <div key={entry.name}><span>{entry.name}</span><code>{entry.identifier.match(/\d+/)?.[0] ?? entry.identifier}</code></div>) ?? <SkeletonRows />}</div></Section>
     <Section title="Security context"><KeyValues values={[["Seccomp", details?.status.Seccomp ?? "—"], ["Capabilities", details?.status.CapEff ?? "—"], ["No new privileges", details?.status.NoNewPrivs ?? "—"], ["Cgroup", details?.cgroup.trim() || "—"]]} /></Section>

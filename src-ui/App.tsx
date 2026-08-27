@@ -4,14 +4,22 @@ import {
 } from "@phosphor-icons/react";
 import { animate } from "animejs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { chooseExportPath, getProcessDetails, startTracking, writeExport } from "./api";
+import {
+  chooseExportPath,
+  getProcessDetails,
+  readSessionRecording,
+  startSessionRecording,
+  startTracking,
+  stopSessionRecording,
+  writeExport,
+} from "./api";
 import { EventStream } from "./components/EventStream";
 import { Inspector } from "./components/Inspector";
 import { MetricChart } from "./components/MetricChart";
 import { ProcessGraph, type GraphDepth, type GraphScope } from "./components/ProcessGraph";
 import { ProcessPicker } from "./components/ProcessPicker";
 import { formatBytes, formatTime } from "./format";
-import type { GraphSnapshot, LifecycleEvent, MetricPoint, ProcessDetails, ProcessListItem, ProcessNode, TrackingMessage } from "./types";
+import type { GraphSnapshot, LifecycleEvent, MetricPoint, ProcessDetails, ProcessListItem, ProcessNode, RecordingInfo, TrackingMessage } from "./types";
 
 type WorkspaceView = "lineage" | "activity" | "inspect" | "session";
 const views: { id: WorkspaceView; label: string; icon: typeof TreeStructure }[] = [
@@ -31,9 +39,6 @@ function Workspace({ target, onDetach }: { target: ProcessListItem; onDetach: ()
   const shell = useRef<HTMLDivElement>(null);
   const viewHost = useRef<HTMLElement>(null);
   const selectedRef = useRef(target.key.id);
-  const recordingRef = useRef(false);
-  const archive = useRef<GraphSnapshot[]>([]);
-  const eventArchive = useRef<LifecycleEvent[]>([]);
   const detailCache = useRef<Record<string, ProcessDetails>>({});
   const [view, setView] = useState<WorkspaceView>("lineage");
   const [sessionId, setSessionId] = useState("");
@@ -46,6 +51,8 @@ function Workspace({ target, onDetach }: { target: ProcessListItem; onDetach: ()
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [paused, setPaused] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordingBusy, setRecordingBusy] = useState(false);
+  const [recordingInfo, setRecordingInfo] = useState<RecordingInfo>();
   const [recordedAt, setRecordedAt] = useState<string>();
   const [metricMode, setMetricMode] = useState<"cpu" | "memory" | "io">("cpu");
   const [metrics, setMetrics] = useState<Record<string, MetricPoint[]>>({});
@@ -73,12 +80,10 @@ function Workspace({ target, onDetach }: { target: ProcessListItem; onDetach: ()
     const receive = (message: TrackingMessage) => {
       if (message.type === "event") {
         setEvents((previous) => [message.payload, ...previous].slice(0, 5000));
-        if (recordingRef.current) eventArchive.current.push(message.payload);
         return;
       }
       const next = message.payload;
       setSnapshot(next);
-      if (recordingRef.current && next.sequence % 4 === 0) archive.current.push(next);
       const selected = next.nodes.find((node) => node.key.id === selectedRef.current)
         ?? next.nodes.find((node) => node.key.id === next.rootKey);
       if (selected) {
@@ -86,7 +91,7 @@ function Workspace({ target, onDetach }: { target: ProcessListItem; onDetach: ()
         setMetrics((previous) => ({ ...previous, [selected.key.id]: [...(previous[selected.key.id] ?? []), point].slice(-1800) }));
       }
     };
-    startTracking(target.key.pid, receive).then((session) => {
+    startTracking(target.key.pid, target.key.startTimeTicks, receive).then((session) => {
       if (cancelled) session.stop();
       else { setSessionId(session.sessionId); stop = session.stop; }
     }).catch((reason) => setTrackingError(String(reason)));
@@ -95,7 +100,6 @@ function Workspace({ target, onDetach }: { target: ProcessListItem; onDetach: ()
 
   useEffect(() => { if (!paused && snapshot) setVisibleSnapshot(snapshot); }, [snapshot, paused]);
   useEffect(() => { selectedRef.current = selectedKey; }, [selectedKey]);
-  useEffect(() => { recordingRef.current = recording; }, [recording]);
 
   const selectedProcess = useMemo(() => snapshot?.nodes.find((node) => node.key.id === selectedKey), [snapshot, selectedKey]);
   const loadDetails = useCallback(async () => {
@@ -118,9 +122,28 @@ function Workspace({ target, onDetach }: { target: ProcessListItem; onDetach: ()
     if (nextView) setView(nextView);
   };
 
-  const toggleRecording = () => {
-    if (!recording) { archive.current = snapshot ? [snapshot] : []; eventArchive.current = []; setRecordedAt(new Date().toISOString()); }
-    setRecording(!recording);
+  const toggleRecording = async () => {
+    if (!sessionId || recordingBusy) return;
+    setRecordingBusy(true);
+    try {
+      const info = recording
+        ? await stopSessionRecording(sessionId)
+        : await startSessionRecording(sessionId);
+      setRecordingInfo(info);
+      setRecordedAt(info.startedAt);
+      setRecording(info.active);
+    } catch (reason) {
+      try {
+        const capture = await readSessionRecording(sessionId);
+        setRecordingInfo(capture.info);
+        setRecording(capture.info.active);
+      } catch {
+        // A start failure can occur before any journal exists.
+      }
+      setToast(`Recording failed: ${String(reason)}`);
+    } finally {
+      setRecordingBusy(false);
+    }
   };
 
   const exportEvidence = async () => {
@@ -129,13 +152,14 @@ function Workspace({ target, onDetach }: { target: ProcessListItem; onDetach: ()
       const timestamp = new Date().toISOString().replaceAll(":", "-").replace(/\.\d+Z$/, "Z");
       const path = await chooseExportPath(`process-stasis-${target.key.pid}-${timestamp}.json`);
       if (!path) return;
+      const recorded = recordedAt ? await readSessionRecording(sessionId) : undefined;
       const payload = {
-        schema: "process-stasis/session-v0.2", exportedAt: new Date().toISOString(),
-        collection: { mode: "procfs-polling", intervalMs: 500, inferredLifecycleEvents: true, limitations: ["Processes shorter than the polling interval may not be observed.", "No syscall or packet content is captured."] },
+        schema: "process-stasis/session-v0.3", exportedAt: new Date().toISOString(),
+        collection: { mode: "procfs-polling", intervalMs: 500, inferredLifecycleEvents: true, identity: "pidfd when available plus procfs start time", recording: recorded ? "native-owner-only-journal" : "latest-state-only", limitations: ["Processes shorter than the polling interval may not be observed.", "No syscall or packet content is captured."] },
         target: { pid: target.key.pid, startTimeTicks: target.key.startTimeTicks, command: target.command },
-        session: { id: sessionId, recordingStartedAt: recordedAt, latestSequence: snapshot?.sequence ?? 0 },
-        latestSnapshot: snapshot, snapshots: archive.current.length ? archive.current : snapshot ? [snapshot] : [],
-        lifecycleEvents: eventArchive.current.length ? eventArchive.current : [...events].reverse(), selectedProcessDetails: details,
+        session: { id: sessionId, recordingStartedAt: recordedAt, latestSequence: snapshot?.sequence ?? 0, journal: recorded?.info },
+        latestSnapshot: snapshot, snapshots: recorded ? recorded.snapshots : snapshot ? [snapshot] : [],
+        lifecycleEvents: recorded ? recorded.lifecycleEvents : [...events].reverse(), selectedProcessDetails: details,
       };
       await writeExport(path, JSON.stringify(payload, null, 2));
       setToast(`Evidence saved to ${path}`); window.setTimeout(() => setToast(""), 4200);
@@ -159,7 +183,7 @@ function Workspace({ target, onDetach }: { target: ProcessListItem; onDetach: ()
           {views.map(({ id, label, icon: Icon }) => <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)}><Icon weight={view === id ? "fill" : "regular"} /><span>{label}</span></button>)}
         </nav>
         <div className="header-actions">
-          <button className={`record-button ${recording ? "recording" : ""}`} onClick={toggleRecording}>{recording ? <Pause weight="fill" /> : <Record weight="fill" />}{recording ? "Stop" : "Record"}</button>
+          <button className={`record-button ${recording ? "recording" : ""}`} onClick={toggleRecording} disabled={recordingBusy || !sessionId}>{recording ? <Pause weight="fill" /> : <Record weight="fill" />}{recordingBusy ? "Working…" : recording ? "Stop" : "Record"}</button>
           <button className="export-button" onClick={exportEvidence} disabled={exporting || !snapshot}>{exporting ? <CircleNotch className="spinning" /> : <DownloadSimple />} Export</button>
         </div>
       </header>
@@ -176,7 +200,7 @@ function Workspace({ target, onDetach }: { target: ProcessListItem; onDetach: ()
         {view === "lineage" && <ProcessGraph snapshot={visibleSnapshot} selectedKey={selectedKey} paused={paused} scope={graphScope} depth={graphDepth} showExited={showExited} onPausedChange={setPaused} onScopeChange={setGraphScope} onDepthChange={setGraphDepth} onShowExitedChange={setShowExited} onSelect={chooseNode} onInspect={(key) => chooseNode(key, "inspect")} />}
         {view === "activity" && <div className="activity-view"><MetricChart points={points} mode={metricMode} onModeChange={setMetricMode} /><EventStream events={events} onSelect={(key) => chooseNode(key, "inspect")} /></div>}
         {view === "inspect" && <div className="inspect-view"><ProcessIndex nodes={snapshot?.nodes ?? []} selectedKey={selectedKey} onSelect={chooseNode} /><Inspector process={selectedProcess} details={details} loading={detailsLoading} error={detailError} onRefresh={loadDetails} /></div>}
-        {view === "session" && <SessionView target={target} snapshot={snapshot} events={events} sessionId={sessionId} recording={recording} recordedAt={recordedAt} exporting={exporting} onRecord={toggleRecording} onExport={exportEvidence} />}
+        {view === "session" && <SessionView target={target} snapshot={snapshot} events={events} sessionId={sessionId} recording={recording} recordingBusy={recordingBusy} recordingInfo={recordingInfo} recordedAt={recordedAt} exporting={exporting} onRecord={toggleRecording} onExport={exportEvidence} />}
       </main>
 
       <footer className="status-bar workspace-reveal"><span><i className="connected" /> Connected</span><span>500 ms polling</span><span>Sequence {snapshot?.sequence ?? 0}</span><span className="status-spacer" /><span>{paused ? "View paused; collection continues" : `Updated ${snapshot ? formatTime(snapshot.timestamp) : "—"}`}</span>{latest && <span>Selected {latest.cpu.toFixed(1)}% · {formatBytes(latest.rss)}</span>}<span>Lifecycle events are inferred</span></footer>
@@ -193,9 +217,9 @@ function ProcessIndex({ nodes, selectedKey, onSelect }: { nodes: ProcessNode[]; 
   return <aside className="process-index"><header><div><span>Observed processes</span><b>{nodes.length}</b></div><small>Live and retained records</small></header><label><MagnifyingGlass /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a process" /></label><div className="process-index-list">{visible.map((node) => <button key={node.key.id} className={selectedKey === node.key.id ? "active" : ""} onClick={() => onSelect(node.key.id)}><span className={`life-indicator ${node.alive ? "alive" : "dead"}`} /><span><strong>{node.comm}</strong><small>PID {node.key.pid} · {node.isAncestor ? "ancestor" : node.isFocus ? "focus" : "descendant"}</small></span><b>{node.cpuPercent.toFixed(1)}%</b></button>)}</div></aside>;
 }
 
-function SessionView({ target, snapshot, events, sessionId, recording, recordedAt, exporting, onRecord, onExport }: { target: ProcessListItem; snapshot?: GraphSnapshot; events: LifecycleEvent[]; sessionId: string; recording: boolean; recordedAt?: string; exporting: boolean; onRecord: () => void; onExport: () => void }) {
-  return <section className="session-view"><header className="view-title"><div><span className="view-kicker">Evidence session</span><h1>Capture what the observer knows.</h1><p>Recording keeps periodic graph snapshots in memory. Export writes a structured JSON case file you can inspect or process elsewhere.</p></div></header><div className="session-grid">
-    <article className="session-card session-primary"><div className={`session-record-state ${recording ? "active" : ""}`}><Record weight="fill" /></div><div><span>Recording</span><h2>{recording ? "Capture in progress" : "Ready to record"}</h2><p>{recording ? `Started ${recordedAt ? formatTime(recordedAt) : "now"}.` : "Start before reproducing the behavior you want to preserve."}</p></div><button className={recording ? "danger-button" : "primary-button"} onClick={onRecord}>{recording ? <Pause weight="fill" /> : <Record weight="fill" />}{recording ? "Stop recording" : "Start recording"}</button></article>
+function SessionView({ target, snapshot, events, sessionId, recording, recordingBusy, recordingInfo, recordedAt, exporting, onRecord, onExport }: { target: ProcessListItem; snapshot?: GraphSnapshot; events: LifecycleEvent[]; sessionId: string; recording: boolean; recordingBusy: boolean; recordingInfo?: RecordingInfo; recordedAt?: string; exporting: boolean; onRecord: () => void; onExport: () => void }) {
+  return <section className="session-view"><header className="view-title"><div><span className="view-kicker">Evidence session</span><h1>Capture what the observer knows.</h1><p>Recording appends lifecycle events and periodic graph snapshots to an owner-only native journal. Export turns that journal into a structured JSON case file.</p></div></header><div className="session-grid">
+    <article className="session-card session-primary"><div className={`session-record-state ${recording ? "active" : ""}`}><Record weight="fill" /></div><div><span>Recording</span><h2>{recording ? "Capture in progress" : recordingInfo ? "Capture paused" : "Ready to record"}</h2><p>{recording ? `Started ${recordedAt ? formatTime(recordedAt) : "now"}.` : recordingInfo ? `${recordingInfo.snapshotCount} snapshots and ${recordingInfo.eventCount} events safely flushed.` : "Start before reproducing the behavior you want to preserve."}</p></div><button disabled={recordingBusy || !sessionId} className={recording ? "danger-button" : "primary-button"} onClick={onRecord}>{recording ? <Pause weight="fill" /> : <Record weight="fill" />}{recordingBusy ? "Working…" : recording ? "Stop recording" : recordingInfo ? "Resume recording" : "Start recording"}</button></article>
     <article className="session-card"><span>Target</span><h3>{target.comm}</h3><code>PID {target.key.pid} · start {target.key.startTimeTicks}</code><p title={target.command}>{target.command}</p></article>
     <article className="session-card"><span>Session</span><h3>{snapshot?.sequence ?? 0} samples</h3><code>{sessionId || "Connecting…"}</code><p>{snapshot?.nodes.length ?? 0} processes · {events.length} lifecycle events</p></article>
     <article className="session-card session-export"><span>Case file</span><h3>Structured JSON</h3><p>Includes target identity, current and recorded snapshots, inferred lifecycle events, collection limits, and the selected deep inspection.</p><button className="export-button" disabled={exporting || !snapshot} onClick={onExport}>{exporting ? <CircleNotch className="spinning" /> : <DownloadSimple />} Export evidence</button></article>

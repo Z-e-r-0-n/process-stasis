@@ -6,12 +6,15 @@ import type {
   ProcessDetails,
   ProcessListItem,
   ProcessNode,
+  RecordedCapture,
+  RecordingInfo,
   SystemOverview,
   TrackingMessage,
 } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const MOCK_START = Date.now();
+const mockRecordings = new Map<string, RecordingInfo>();
 
 export async function listProcesses(query = "", limit = 250): Promise<ProcessListItem[]> {
   if (isTauri()) return invoke("list_processes", { query, limit });
@@ -39,12 +42,13 @@ export async function getProcessDetails(pid: number, startTimeTicks?: number): P
 
 export async function startTracking(
   pid: number,
+  startTimeTicks: number,
   onMessage: (message: TrackingMessage) => void,
 ): Promise<{ sessionId: string; stop: () => Promise<void> }> {
   if (isTauri()) {
     const channel = new Channel<TrackingMessage>();
     channel.onmessage = onMessage;
-    const sessionId = await invoke<string>("start_tracking", { pid, onEvent: channel });
+    const sessionId = await invoke<string>("start_tracking", { pid, startTimeTicks, onEvent: channel });
     return {
       sessionId,
       stop: async () => {
@@ -73,6 +77,33 @@ export async function writeExport(path: string, content: string): Promise<void> 
   anchor.download = path;
   anchor.click();
   URL.revokeObjectURL(anchor.href);
+}
+
+export async function startSessionRecording(sessionId: string): Promise<RecordingInfo> {
+  if (isTauri()) return invoke("start_recording", { sessionId });
+  const info = mockRecordings.get(sessionId) ?? {
+    sessionId, fileName: `${sessionId}.jsonl`, startedAt: new Date().toISOString(),
+    active: false, snapshotCount: 0, eventCount: 0, byteCount: 0,
+  };
+  const active = { ...info, active: true };
+  mockRecordings.set(sessionId, active);
+  return active;
+}
+
+export async function stopSessionRecording(sessionId: string): Promise<RecordingInfo> {
+  if (isTauri()) return invoke("stop_recording", { sessionId });
+  const info = mockRecordings.get(sessionId);
+  if (!info) throw new Error("recording is not active");
+  const stopped = { ...info, active: false };
+  mockRecordings.set(sessionId, stopped);
+  return stopped;
+}
+
+export async function readSessionRecording(sessionId: string): Promise<RecordedCapture> {
+  if (isTauri()) return invoke("read_recording", { sessionId });
+  const info = mockRecordings.get(sessionId);
+  if (!info) throw new Error("this session has not been recorded");
+  return { info, snapshots: [], lifecycleEvents: [] };
 }
 
 function mockProcesses(): ProcessListItem[] {
@@ -122,6 +153,7 @@ function startMockTracking(
       alive: !(sequence > 34 && index === 2),
       isFocus: item.key.id === root.key.id,
       isAncestor: index === 1,
+      identityGuard: "pidfd+start-time",
       discoveredAt: new Date(started + index * 3500).toISOString(),
       exitedAt: sequence > 34 && index === 2 ? new Date().toISOString() : undefined,
       cpuPercent: Math.max(0, 13 + Math.sin(elapsed * 1.6 + index) * 11 - index * 2),

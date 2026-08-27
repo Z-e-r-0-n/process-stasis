@@ -3,13 +3,16 @@ mod tracker;
 mod types;
 
 use crate::tracker::TrackerState;
-use crate::types::{ProcessDetails, ProcessListItem, SystemOverview, TrackingMessage};
+use crate::types::{
+    ProcessDetails, ProcessListItem, RecordedCapture, RecordingInfo, SystemOverview,
+    TrackingMessage,
+};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{Manager, State};
 use uuid::Uuid;
 
 const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
@@ -32,15 +35,40 @@ fn get_system_overview() -> SystemOverview {
 #[tauri::command]
 fn start_tracking(
     pid: i32,
+    start_time_ticks: Option<u64>,
     on_event: Channel<TrackingMessage>,
     state: State<'_, TrackerState>,
 ) -> Result<String, String> {
-    state.begin(pid, on_event)
+    state.begin(pid, start_time_ticks, on_event)
 }
 
 #[tauri::command]
 fn stop_tracking(session_id: String, state: State<'_, TrackerState>) -> bool {
     state.stop(&session_id)
+}
+
+#[tauri::command]
+fn start_recording(
+    session_id: String,
+    state: State<'_, TrackerState>,
+) -> Result<RecordingInfo, String> {
+    state.start_recording(&session_id)
+}
+
+#[tauri::command]
+fn stop_recording(
+    session_id: String,
+    state: State<'_, TrackerState>,
+) -> Result<RecordingInfo, String> {
+    state.stop_recording(&session_id)
+}
+
+#[tauri::command]
+fn read_recording(
+    session_id: String,
+    state: State<'_, TrackerState>,
+) -> Result<RecordedCapture, String> {
+    state.read_recording(&session_id)
 }
 
 #[tauri::command]
@@ -81,13 +109,20 @@ fn write_export(path: String, content: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(TrackerState::default())
+        .setup(|app| {
+            let recording_root = app.path().app_data_dir()?.join("recordings");
+            app.manage(TrackerState::new(recording_root));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_processes,
             get_process_details,
             get_system_overview,
             start_tracking,
             stop_tracking,
+            start_recording,
+            stop_recording,
+            read_recording,
             write_export
         ])
         .run(tauri::generate_context!())
