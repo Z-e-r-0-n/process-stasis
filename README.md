@@ -1,0 +1,105 @@
+# Process Stasis
+
+Process Stasis is a Linux desktop application for live process intelligence. Give
+it a PID and it builds a temporal family graph, streams resource telemetry,
+retains processes after exit, follows known surviving children, exposes deep
+procfs evidence, and exports a structured investigation session.
+
+Version `0.2.0` is read-only. It sends no signal and performs no containment,
+injection, termination, or replay.
+
+## Implemented desktop workflow
+
+1. Search by PID, task name, or command and select a visible process.
+2. Pin its identity to Linux boot ID, PID, and start-time ticks.
+3. Display visible ancestors and recursively visible descendants.
+4. Sample the known family every 500 ms and infer spawn, exec, and exit events.
+5. Preserve exited nodes and follow known live descendants after focus-process exit.
+6. Inspect status, identity, executable hash, namespaces, descriptors, sockets,
+   memory maps, I/O, cgroups, limits, and masked environment values.
+7. Record and export a private JSON investigation session.
+
+The exact collection fields, workflow, export shape, and limitations are in
+[`docs/DESKTOP-WORKFLOW.md`](docs/DESKTOP-WORKFLOW.md). The older `0.1` Python
+snapshot collector is documented in
+[`docs/CURRENT-WORKFLOW.md`](docs/CURRENT-WORKFLOW.md).
+
+## Run the desktop application
+
+Required on Ubuntu-family Linux systems:
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+  libsoup-3.0-dev libayatana-appindicator3-dev patchelf
+```
+
+Then from the repository root:
+
+```bash
+npm install
+npm run dev
+```
+
+Create release packages with:
+
+```bash
+npm run tauri build
+```
+
+The `.deb` and `.AppImage` are written under
+`src-tauri/target/release/bundle/`.
+
+Use only PIDs you own or are explicitly authorized to inspect. Procfs visibility
+depends on the current user, `hidepid`, ptrace policy, and process exit timing.
+
+## Browser-only UI preview
+
+```bash
+npm run dev:web
+```
+
+Open `http://127.0.0.1:1420`. Outside Tauri, the interface uses an animated
+synthetic process family and does not inspect host processes.
+
+## Verification
+
+```bash
+npm run typecheck
+npm run build:web
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo test --manifest-path src-tauri/Cargo.toml
+pytest -q
+```
+
+## Benign process-tree target
+
+For an authorized local demonstration:
+
+```bash
+runtime=$(mktemp -d /tmp/process-stasis-target.XXXXXX)
+python3 targets/process_tree_target.py --runtime "$runtime"
+```
+
+The foreground target creates `stasis-root`, `stasis-watch`, `stasis-leaf`, and
+`stasis-server`. The server listens only on loopback, and the leaf retains one
+deleted-open test file. Stop it with `Ctrl+C` after testing.
+
+## Architecture boundary
+
+The desktop uses React, React Flow, Anime.js, uPlot, and a Rust Tauri
+backend that reads procfs. Polling is explicitly labeled because short-lived
+processes can be missed. Kernel event tracing, containment, and VM-based replay
+remain future phases; containers or syscall interception will not be presented
+as the sole boundary for hostile code.
+
+## Packages and compatibility
+
+- The `.deb` is the preferred package for current Kali Rolling and compatible
+  Debian-family x86-64 systems. Install it with `sudo apt install ./PACKAGE.deb`
+  so the package manager resolves GTK, WebKit, and GStreamer dependencies.
+- AppImages carry most runtime libraries but still depend on the build system's
+  glibc baseline. Do not describe an AppImage as broadly portable until it has
+  been built and tested on the oldest supported distribution.
+- Install packages with elevated privileges, but run the application as the
+  desktop user. A future narrowly privileged collector will replace any need to
+  elevate the complete WebView application.

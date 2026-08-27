@@ -1,0 +1,14 @@
+/work/private/
+/runtime/
+/build/
+/dist/
+/.pytest_cache/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+/node_modules/
+/dist/
+/src-tauri/target/
+/src-tauri/gen/
+*.AppImage
+*.deb

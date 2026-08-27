@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://process-stasis.invalid/schemas/evidence-bundle-v0.1.schema.json",
+  "title": "Process Stasis evidence bundle 0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case",
+    "capture",
+    "target",
+    "artifacts",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.1"
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization_acknowledged", "reason"],
+      "properties": {
+        "authorization_acknowledged": {"const": true},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "started_at_utc",
+        "ended_at_utc",
+        "duration_monotonic_ns",
+        "complete",
+        "collector",
+        "pidfd"
+      ],
+      "properties": {
+        "started_at_utc": {"type": "string", "format": "date-time"},
+        "ended_at_utc": {"type": "string", "format": "date-time"},
+        "duration_monotonic_ns": {"type": "integer", "minimum": 0},
+        "complete": {"type": "boolean"},
+        "collector": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version", "python", "platform"],
+          "properties": {
+            "name": {"const": "process-stasis"},
+            "version": {"type": "string"},
+            "python": {"type": "string"},
+            "platform": {"type": "string"}
+          }
+        },
+        "pidfd": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["supported", "opened", "exited_by_end"],
+          "properties": {
+            "supported": {"type": "boolean"},
+            "opened": {"type": "boolean"},
+            "exited_by_end": {"type": ["boolean", "null"]}
+          }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_pid",
+        "initial_identity",
+        "final_identity",
+        "identity_stable"
+      ],
+      "properties": {
+        "requested_pid": {"type": "integer", "minimum": 1},
+        "initial_identity": {
+          "anyOf": [{"$ref": "#/$defs/processIdentity"}, {"type": "null"}]
+        },
+        "final_identity": {
+          "anyOf": [{"$ref": "#/$defs/processIdentity"}, {"type": "null"}]
+        },
+        "identity_stable": {"type": "boolean"}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cmdline",
+        "comm",
+        "links",
+        "status",
+        "cgroup",
+        "limits",
+        "namespaces",
+        "file_descriptors",
+        "executable_sha256"
+      ],
+      "properties": {
+        "cmdline": {"$ref": "#/$defs/observation"},
+        "comm": {"$ref": "#/$defs/observation"},
+        "links": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exe", "cwd", "root"],
+          "properties": {
+            "exe": {"$ref": "#/$defs/observation"},
+            "cwd": {"$ref": "#/$defs/observation"},
+            "root": {"$ref": "#/$defs/observation"}
+          }
+        },
+        "status": {"$ref": "#/$defs/observation"},
+        "cgroup": {"$ref": "#/$defs/observation"},
+        "limits": {"$ref": "#/$defs/observation"},
+        "namespaces": {"$ref": "#/$defs/observation"},
+        "file_descriptors": {"$ref": "#/$defs/observation"},
+        "executable_sha256": {"$ref": "#/$defs/observation"}
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/collectionError"}
+    }
+  },
+  "$defs": {
+    "processIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pid", "ppid", "state", "comm", "start_time_ticks"],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "ppid": {"type": "integer", "minimum": 0},
+        "state": {"type": "string", "minLength": 1, "maxLength": 1},
+        "comm": {"type": "string"},
+        "start_time_ticks": {"type": "integer", "minimum": 0}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "source", "value"],
+      "properties": {
+        "status": {"enum": ["collected", "unavailable", "error"]},
+        "source": {"type": "string"},
+        "value": true
+      }
+    },
+    "collectionError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "source", "kind", "message"],
+      "properties": {
+        "stage": {"type": "string"},
+        "source": {"type": "string"},
+        "kind": {"type": "string"},
+        "message": {"type": "string"}
+      }
+    }
+  }
+}
