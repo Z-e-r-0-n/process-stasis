@@ -1,6 +1,6 @@
 # Desktop workflow and evidence contract
 
-This document describes the implemented Process Stasis `0.7.0` desktop
+This document describes the implemented Process Stasis `0.8.0` desktop
 application. The Python `0.1` point-in-time collector remains documented in
 [`CURRENT-WORKFLOW.md`](CURRENT-WORKFLOW.md).
 
@@ -12,8 +12,10 @@ The application has three implemented paths:
    sending a signal or changing execution.
 2. **Investigate** records, reopens, searches, annotates, compares, and exports
    the evidence collected by Observe.
-3. **Control** can request cgroup v2 freeze or thaw only when every safety gate
-   below passes. It does not move processes between cgroups.
+3. **Control** uses a narrowly scoped privileged helper to acquire a visible live
+   tree into a dedicated cgroup v2, freeze it, resume it, and verify each kernel
+   transition. A command can alternatively be launched in the managed group from
+   birth.
 
 It does not capture syscall arguments, packets, file contents, or memory; block
 network traffic; terminate a process; migrate execution; emulate libc/syscalls;
@@ -27,7 +29,9 @@ choose PID
   -> optionally journal evidence
   -> inspect / search / annotate / compare
   -> export JSON or HTML
-  -> optionally verify gates -> record request -> freeze/thaw -> verify result
+  -> Control automatically starts journal
+  -> stop and stabilize visible tree -> move to dedicated cgroup
+  -> freeze/thaw -> verify cgroup.events -> capture frozen process details
 ```
 
 ## Attach, identity, and scope
@@ -78,7 +82,10 @@ kernel clock frequency. Multi-threaded processes can exceed 100 percent.
 
 The graph pause button pauses presentation only. Live collection continues. The
 UI retains up to 1,800 metric points per selected identity and 1,800 two-second
-comparison snapshots.
+comparison snapshots. Node coordinates and the operator's viewport persist
+across samples. New nodes receive one entry transition; existing nodes are not
+remounted or automatically refitted. Double-clicking a node folds or unfolds its
+descendant branch.
 
 ## Deep inspection
 
@@ -150,7 +157,7 @@ in-session comparison, not a byte-for-byte memory diff.
 
 ## Export contract
 
-JSON exports use `process-stasis/session-v0.7` and contain:
+JSON exports use `process-stasis/session-v0.8` and contain:
 
 ```text
 schema, exportedAt
@@ -173,38 +180,53 @@ values. HTML reports are escaped, contain no executable target markup, omit
 environment values, and include at most the latest 500 lifecycle events. Atomic
 export writes are limited to 64 MiB and use mode `0600`.
 
-## Verified cgroup freeze/thaw
+## Managed launch and cgroup freeze/thaw
 
-Control is unavailable unless all gates pass:
+The desktop remains unprivileged. A Control action invokes the same executable
+through `pkexec --process-stasis-helper` and sends one bounded JSON request on
+standard input. The helper exits before the WebView receives the result.
 
-1. unified cgroup v2 is mounted;
-2. the tracking session has a current live focus/descendant scope;
-3. every living tracked member reports the same unified cgroup;
-4. that cgroup is not `/`;
-5. recursively enumerating the cgroup subtree (maximum depth 32 and 4,096 PIDs)
-   finds exactly the tracked living PIDs and no unrelated PID;
-6. `cgroup.freeze` is writable by the application user;
-7. every PID still has the expected start-time ticks immediately before action;
-8. evidence recording is active;
-9. the operator provides a printable 8–500 character reason and checks the
-   authorization acknowledgement.
+For an already-running PID, Freeze performs this transaction:
 
-The native backend records the request, writes `1` (freeze) or `0` (thaw), then
-polls `cgroup.events` for up to one second. A result is successful only when the
-kernel reports the requested `frozen` value and membership is still exact. If a
-freeze succeeds but membership changes during verification, the group remains
-frozen and the result says that operator review is required. The application
-never silently thaws or kills the target.
+1. automatically start or continue the owner-only evidence journal;
+2. verify the focus PID and start-time ticks;
+3. scan the full current descendant tree, rejecting PID 1, the desktop process,
+   and trees larger than 4,096 processes;
+4. send `SIGSTOP` only to members not already stopped, rescan, and require two
+   identical tree discoveries within twelve bounded rounds;
+5. create `/sys/fs/cgroup/process-stasis/SESSION_UUID`;
+6. verify every identity again and move each process through `cgroup.procs`;
+7. require exact cgroup membership, write `1` to `cgroup.freeze`, and poll
+   `cgroup.events` until it reports `frozen 1`;
+8. clear only the temporary `SIGSTOP` signals; the cgroup freezer retains the
+   stopped execution state;
+9. record the request/result and capture a bounded deep inspection of up to 256
+   acquired members while the group is frozen.
 
-Network restriction is deliberately unavailable. It requires a separately
-audited privileged helper; the WebView is not elevated and a container is not
-treated as the sole hostile-code boundary.
+If acquisition fails, the helper thaws the temporary group, moves any migrated
+members back to their recorded original cgroups, resumes only processes it
+stopped, and removes the empty session group. Resume writes `0` and requires the
+kernel to report `frozen 0`. The managed group remains in place so descendants
+inherit it and the same tree can be frozen again.
+
+**Launch under Stasis** creates the group first, forks a minimal shell wrapper,
+moves the child into the group before `exec`, drops to the requesting user's UID,
+GID, and supplementary groups, and then starts the requested command. This path
+avoids the acquisition race for the initial process and all descendants inherit
+the group.
+
+The Control view contains one Freeze/Resume action. It has no authorization
+checkbox, mandatory reason, visible gate matrix, failure-contract card, or dead
+network-control panel. Kernel and cgroup validation still occur in the helper;
+technical state is available through a compact disclosure.
 
 ## Remaining boundaries
 
 - No kernel fork/exec event stream is installed, so sub-sample activity can be missed.
 - No syscall arguments, library calls, packet contents, DNS, or file-content timeline.
-- No cgroup creation/launcher or arbitrary live-tree cgroup migration.
-- No network policy helper, ptrace injection, signal-based pause, or termination.
+- Live-tree acquisition cannot recover a child that forked and exited before any
+  scan observed it; managed launch is the exact-from-birth path.
+- No network policy, ptrace injection, termination, or cgroup release/move-back
+  command after a successful acquisition.
 - No VM replay, environment simulation, syscall mediation, or CRIU restore.
 - No automatic verdict or remediation decision.

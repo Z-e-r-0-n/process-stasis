@@ -11,10 +11,10 @@ Process Stasis is three related workflows, not one transparent migration trick:
 3. **Replay** builds a declared reconstruction and starts it inside a disposable
    analysis VM. Replay is not represented as continuation of the original process.
 
-Inspect and the evidence/case workflow are implemented. A narrow Stasis control
-is also implemented for a process family that is already in one exclusive,
-writable cgroup v2 subtree; it never performs arbitrary live-tree migration.
-Replay remains disabled until its VM and network safety gates exist.
+Inspect and the evidence/case workflow are implemented. Stasis can create a
+managed cgroup for a new command or acquire a visible existing tree through a
+bounded stop/rescan/move transaction before verified freeze. Replay remains
+disabled until its VM and network boundary exist.
 
 ## End-to-end data flow
 
@@ -25,8 +25,8 @@ flowchart LR
     C -->|procfs and stable identity checks| P[Live process]
     C -->|bundle v0.1| E[(Private evidence store)]
 
-    CLI -. later explicit action .-> S[Small privileged stasis controller]
-    S -. verified cgroup freeze .-> P
+    CLI -->|bounded JSON through Polkit| S[Small privileged stasis controller]
+    S -->|acquire + verified cgroup freeze| P
 
     E -. selected artifacts + fidelity manifest .-> B[Reconstruction builder]
     B -. run package .-> R[VM runner]
@@ -39,8 +39,7 @@ flowchart LR
     E --> A
 ```
 
-The inspect/evidence path is implemented. The controller arrow is implemented
-only for verified freeze/thaw of an existing exclusive cgroup; VM/replay arrows
+The inspect/evidence and controller arrows are implemented. VM/replay arrows
 remain later phases.
 
 ## Trust boundaries
@@ -109,23 +108,25 @@ state.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> ScopeChecked
-    ScopeChecked --> ControlledGroupVerified
-    ControlledGroupVerified --> FreezeRequested
+    [*] --> IdentityChecked
+    IdentityChecked --> TreeStopped
+    TreeStopped --> TreeStable: bounded rescan
+    TreeStable --> GroupAcquired: move + exact membership
+    GroupAcquired --> FreezeRequested
     FreezeRequested --> FrozenVerified: cgroup.events frozen=1
     FreezeRequested --> FailedSafe: timeout or lost control
     FrozenVerified --> Captured
     Captured --> AwaitingDisposition
     AwaitingDisposition --> Thawed: explicit operator action
-    AwaitingDisposition --> Terminated: explicit operator action
     AwaitingDisposition --> LeftFrozen: handoff to incident response
 ```
 
-The current controller does not attach or move an arbitrary tree. It permits
-freeze/thaw only when recursive cgroup membership already equals the identity-
-pinned living tracked scope, refuses the root group, records the operator request,
-and verifies `cgroup.events`. A future controlled launcher remains the dependable
-way to establish that boundary from process birth.
+The current controller rejects PID 1 and the desktop's own process tree, checks
+start-time identity before moving each PID, limits discovery to 4,096 members and
+twelve stabilization rounds, and rolls partial acquisition back to recorded
+original cgroups. It verifies `cgroup.events` after freeze and resume. Managed
+launch creates the cgroup before the child execs and drops back to the requesting
+desktop user's credentials.
 
 ## Replay workflow and network boundary
 
@@ -169,7 +170,7 @@ after execution stops, through a bounded artifact path controlled by the runner.
 - A failed or unverified freeze never transitions to `frozen`.
 - Replay never receives Internet access as a compatibility fallback.
 - A simulator failure stops or isolates replay; it does not route around it.
-- No component automatically thaws, kills, or labels the target malicious.
+- No component automatically kills or labels the target malicious.
 
 ## Component ownership
 
@@ -177,7 +178,7 @@ after execution stops, through a bounded artifact path controlled by the runner.
 |---|---:|---|---|
 | CLI | User | Validate operator input and select an explicit workflow | Infer authorization or hide warnings |
 | Collector | User by default | Read and normalize bounded process evidence | Signal, attach for writing, or execute target data |
-| Stasis controller | Narrow elevated helper | Create/control cgroup and verify state | Parse reports, access network, or choose disposition |
+| Stasis controller | Narrow elevated helper | Launch/acquire a tree, create/control cgroup, and verify state | Parse reports, access network, terminate a target, or render UI |
 | Evidence store | Owner-only | Preserve versioned raw bundles and integrity metadata | Serve unescaped data to a browser |
 | Builder | User | Select artifacts and record reconstruction fidelity | Claim a fresh launch is continuation |
 | VM runner | Elevated only where required | Enforce guest, resource, and network boundaries | Mount home directories or silently enable egress |

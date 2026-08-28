@@ -23,6 +23,7 @@ const MOCK_START = Date.now();
 const mockRecordings = new Map<string, RecordingInfo>();
 const mockCaptures = new Map<string, RecordedCapture>();
 const mockCases = new Map<string, CaseMetadata>();
+const mockContainment = new Map<string, ContainmentStatus>();
 
 export async function listProcesses(query = "", limit = 250): Promise<ProcessListItem[]> {
   if (isTauri()) return invoke("list_processes", { query, limit });
@@ -40,6 +41,12 @@ export async function systemOverview(): Promise<SystemOverview> {
     memoryAvailableBytes: 19.4 * 1024 ** 3,
     bootId: "browser-preview",
   };
+}
+
+export async function launchUnderStasis(command: string): Promise<ProcessListItem> {
+  if (isTauri()) return invoke("launch_under_stasis", { command });
+  const template = mockProcesses()[0];
+  return { ...template, key: { ...template.key, id: `preview-launch:${crypto.randomUUID()}` }, command, comm: command.split(/\s+/).at(-1) || "managed-command" };
 }
 
 export async function getProcessDetails(pid: number, startTimeTicks?: number): Promise<ProcessDetails> {
@@ -175,20 +182,31 @@ export async function getCollectorProfile(): Promise<CollectorProfile> {
 
 export async function getContainmentStatus(sessionId: string): Promise<ContainmentStatus> {
   if (isTauri()) return invoke("get_containment_status", { sessionId });
-  return {
-    supported: true, available: false, frozen: false, reason: "Browser preview cannot access cgroup controls.", members: [], networkRestrictionAvailable: false,
-    networkReason: "Network isolation requires a separately audited privileged helper.",
-    gates: [
-      { id: "cgroup-v2", label: "Unified cgroup v2", passed: true, detail: "Simulated host supports cgroup v2." },
-      { id: "live-scope", label: "Live tracked scope", passed: true, detail: "A simulated scope is active." },
-      { id: "writable-freezer", label: "Writable freezer", passed: false, detail: "Browser preview cannot write cgroup.freeze." },
-    ],
+  return mockContainment.get(sessionId) ?? {
+    supported: true, available: true, managed: false, frozen: false,
+    summary: "Ready to acquire the selected tree.", members: [],
   };
 }
 
-export async function setContainmentFrozen(sessionId: string, freeze: boolean, reason: string, acknowledged: boolean): Promise<ContainmentOutcome> {
-  if (isTauri()) return invoke("set_containment_frozen", { sessionId, freeze, reason, acknowledged });
-  throw new Error("Containment is intentionally unavailable in browser preview.");
+export async function setContainmentFrozen(sessionId: string, freeze: boolean): Promise<ContainmentOutcome> {
+  if (isTauri()) return invoke("set_containment_frozen", { sessionId, freeze });
+  const recording = mockRecordings.get(sessionId)?.active
+    ? mockRecordings.get(sessionId)!
+    : await startSessionRecording(sessionId);
+  const members = mockProcesses().slice(0, 3).map((item) => item.key);
+  const status: ContainmentStatus = {
+    supported: true, available: true, managed: true, frozen: freeze,
+    cgroupPath: `/process-stasis/${sessionId}`, members,
+    summary: `${members.length} processes ${freeze ? "frozen" : "acquired and running"}`,
+  };
+  mockContainment.set(sessionId, status);
+  const action = {
+    id: crypto.randomUUID(), timestamp: new Date().toISOString(), action: freeze ? "freeze" : "thaw",
+    outcome: "verified", reason: "desktop-control", cgroupPath: status.cgroupPath,
+    affectedProcesses: members, verification: `kernel confirmed frozen=${freeze ? 1 : 0} for ${members.length} processes`,
+  };
+  mockCaptures.get(sessionId)?.controlActions.push(action);
+  return { status, action, recording };
 }
 
 function mockProcesses(): ProcessListItem[] {

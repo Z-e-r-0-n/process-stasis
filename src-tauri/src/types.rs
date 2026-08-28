@@ -294,25 +294,14 @@ pub struct CollectorProfile {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CapabilityGate {
-    pub id: String,
-    pub label: String,
-    pub passed: bool,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ContainmentStatus {
     pub supported: bool,
     pub available: bool,
+    pub managed: bool,
     pub frozen: bool,
     pub cgroup_path: Option<String>,
-    pub reason: String,
-    pub gates: Vec<CapabilityGate>,
+    pub summary: String,
     pub members: Vec<ProcessKey>,
-    pub network_restriction_available: bool,
-    pub network_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -320,6 +309,7 @@ pub struct ContainmentStatus {
 pub struct ContainmentOutcome {
     pub status: ContainmentStatus,
     pub action: ControlAction,
+    pub recording: RecordingInfo,
 }
 
 #[derive(Debug, Clone, Serialize)]

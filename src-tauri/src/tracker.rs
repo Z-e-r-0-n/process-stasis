@@ -214,6 +214,16 @@ impl TrackerState {
             .unwrap_or(false)
     }
 
+    pub fn recording_info(&self, session_id: &str) -> Result<RecordingInfo, String> {
+        self.control_from_history(session_id)?
+            .recording
+            .lock()
+            .map_err(|_| "recording state is unavailable".to_string())?
+            .info
+            .clone()
+            .ok_or_else(|| "recording has not started".to_string())
+    }
+
     pub fn record_control_action(
         &self,
         session_id: &str,

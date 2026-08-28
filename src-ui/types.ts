@@ -215,28 +215,20 @@ export interface CollectorProfile {
   capabilities: CollectorCapability[];
 }
 
-export interface CapabilityGate {
-  id: string;
-  label: string;
-  passed: boolean;
-  detail: string;
-}
-
 export interface ContainmentStatus {
   supported: boolean;
   available: boolean;
+  managed: boolean;
   frozen: boolean;
   cgroupPath?: string;
-  reason: string;
-  gates: CapabilityGate[];
+  summary: string;
   members: ProcessKey[];
-  networkRestrictionAvailable: boolean;
-  networkReason: string;
 }
 
 export interface ContainmentOutcome {
   status: ContainmentStatus;
   action: ControlAction;
+  recording: RecordingInfo;
 }
 
 export interface SystemOverview {

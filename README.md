@@ -5,10 +5,11 @@ it a PID and it builds a temporal family graph, streams resource telemetry,
 retains processes after exit, follows known surviving children, exposes deep
 procfs evidence, and exports a structured investigation session.
 
-Version `0.7.0` combines live observation, reopenable evidence sessions, and one
-strictly gated control: verified cgroup v2 freeze/thaw. It does not move an
-arbitrary process tree into a cgroup, restrict networking, inject, terminate,
-emulate, or replay a target.
+Version `0.8.0` adds a root-only helper behind the unprivileged desktop. It can
+briefly stop and stabilize a visible process tree, move that tree into a
+dedicated cgroup v2, freeze or resume it, and verify the resulting kernel state.
+It can also launch a command inside a dedicated group from birth. The WebView
+itself does not run as root.
 
 ## Implemented desktop workflow
 
@@ -27,8 +28,11 @@ emulate, or replay a target.
    control actions; reopen sessions after restart.
 8. Search/filter the timeline, bookmark evidence, write case notes and tags,
    compare graph snapshots, and export redacted JSON or a readable HTML report.
-9. Offer freeze/thaw only when every live tracked member occupies one writable,
-   exclusive, non-root cgroup and `cgroup.events` verifies the requested state.
+9. Start the evidence journal automatically when Control is used, acquire the
+   visible live tree through a Polkit-elevated helper, and verify freeze/thaw
+   through `cgroup.events`.
+10. Capture a bounded deep inspection for acquired members immediately after a
+    successful freeze.
 
 The exact collection fields, workflow, export shape, and limitations are in
 [`docs/DESKTOP-WORKFLOW.md`](docs/DESKTOP-WORKFLOW.md). The older `0.1` Python
@@ -60,8 +64,9 @@ npm run tauri build
 The `.deb` and `.AppImage` are written under
 `src-tauri/target/release/bundle/`.
 
-Use only PIDs you own or are explicitly authorized to inspect. Procfs visibility
-depends on the current user, `hidepid`, ptrace policy, and process exit timing.
+Procfs visibility depends on the current user, `hidepid`, ptrace policy, and
+process exit timing. Control normally triggers one desktop Polkit prompt; there
+is no reason field or acknowledgement form in the application.
 
 ## Browser-only UI preview
 
@@ -99,10 +104,11 @@ deleted-open test file. Stop it with `Ctrl+C` after testing.
 
 The desktop uses React, React Flow, Anime.js, uPlot, and a Rust Tauri backend.
 Procfs polling remains explicit because short-lived processes can be missed; this
-build does not install an eBPF or process-connector helper. Freeze/thaw writes
-only to a pre-existing verified cgroup and never claims that a container alone is
-a hostile-code boundary. Network isolation, syscall mediation, VM replay, and
-checkpoint/restore remain separate future components.
+build does not install an eBPF or process-connector collector. The same executable
+has a non-GUI helper entry point invoked by `pkexec`; it accepts a bounded JSON
+request on standard input, validates PID start time again as root, and exposes
+only managed launch, tree acquisition, freeze, and thaw. Network isolation,
+syscall mediation, VM replay, and checkpoint/restore remain separate components.
 
 ## Packages and compatibility
 
@@ -113,5 +119,5 @@ checkpoint/restore remain separate future components.
   glibc baseline. Do not describe an AppImage as broadly portable until it has
   been built and tested on the oldest supported distribution.
 - Install packages with elevated privileges, but run the application as the
-  desktop user. A future narrowly privileged collector will replace any need to
-  elevate the complete WebView application.
+  desktop user. Process Stasis elevates only its helper entry point when a
+  managed launch or Control action needs it.

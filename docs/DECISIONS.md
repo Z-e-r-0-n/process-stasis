@@ -26,9 +26,11 @@ experiment, but the replacement must record why.
 | D019 | Keep original observations append-only and case annotations in a sidecar | Notes and bookmarks must not rewrite captured evidence. |
 | D020 | Label lifecycle provenance and confidence in both UI and export | Procfs diffs must not be mistaken for kernel audit events. |
 | D021 | Reopen only bounded owner-only journals with canonical UUID names | Persistent cases should survive restart without accepting arbitrary paths or symlinks. |
-| D022 | Permit freeze/thaw only for an already-exclusive cgroup subtree | Exact recursive membership avoids freezing unrelated processes and does not pretend live migration is atomic. |
-| D023 | Require active evidence recording before a containment action | Every state change needs a request and verified result in the native journal. |
-| D024 | Keep network restriction visibly unavailable until a separate helper exists | Elevating the full WebView or implying container isolation would violate the trust boundary. |
+| D022 | Acquire an existing tree with a bounded stop/rescan/move transaction and keep managed launch as the exact-from-birth path | Existing-tree acquisition is useful but cannot recover activity that ended before discovery. |
+| D023 | Start evidence recording automatically before a containment action | Every state change remains journaled without turning recording into a UI prerequisite. |
+| D024 | Omit network controls until a working policy backend exists | A dead capability card adds noise and does not improve the investigation. |
+| D025 | Elevate only the bounded helper entry point through Polkit | Cgroup mutation needs root; the Tauri WebView and case workspace do not. |
+| D026 | Preserve graph coordinates and viewport across samples | Live evidence should update data, not repeatedly reset the investigator's spatial context. |
 
 ## Deferred choices
 

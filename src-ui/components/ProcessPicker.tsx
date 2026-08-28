@@ -7,12 +7,13 @@ import type { ProcessListItem, SessionSummary, SystemOverview } from "../types";
 
 interface Props {
   onSelect: (process: ProcessListItem) => void;
+  onLaunch: (command: string) => Promise<void>;
   sessions: SessionSummary[];
   openingSession?: string;
   onOpenSession: (session: SessionSummary) => void;
 }
 
-export function ProcessPicker({ onSelect, sessions, openingSession, onOpenSession }: Props) {
+export function ProcessPicker({ onSelect, onLaunch, sessions, openingSession, onOpenSession }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -21,6 +22,8 @@ export function ProcessPicker({ onSelect, sessions, openingSession, onOpenSessio
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<string>();
+  const [launchCommand, setLaunchCommand] = useState("");
+  const [launching, setLaunching] = useState(false);
 
   useEffect(() => {
     animate(root.current!.querySelectorAll(".reveal"), {
@@ -58,19 +61,25 @@ export function ProcessPicker({ onSelect, sessions, openingSession, onOpenSessio
 
   const chosen = useMemo(() => processes.find((item) => item.key.id === selected), [processes, selected]);
   const attach = (process = chosen) => process && onSelect(process);
+  const launch = async () => {
+    if (!launchCommand.trim() || launching) return;
+    setLaunching(true); setError("");
+    try { await onLaunch(launchCommand.trim()); }
+    catch (reason) { setError(String(reason)); setLaunching(false); }
+  };
 
   return (
     <div className="picker-screen" ref={root}>
       <header className="picker-header reveal">
         <div className="wordmark"><span className="brand-glyph"><ShieldChevron weight="fill" /></span><span>Process Stasis<small>Linux process observer</small></span></div>
-        <span className="version-badge">0.7</span>
+        <span className="version-badge">0.8</span>
       </header>
 
       <main className="picker-content">
         <section className="picker-intro reveal">
-          <p className="eyebrow">New observation</p>
-          <h1>Choose what<br />to follow.</h1>
-          <p className="lede">Start with a visible Linux process. The observer follows its lineage, retains exited nodes, and makes the collected details available for inspection and export.</p>
+          <p className="eyebrow">Live process desk</p>
+          <h1>See the tree.<br />Hold the moment.</h1>
+          <p className="lede">Choose a running process to follow its lineage, inspect changing state, preserve evidence, and freeze the complete visible tree from the same workspace.</p>
           <div className="system-strip">
             <div><span>Visible</span><strong>{overview?.processCount ?? "—"}</strong><small>processes</small></div>
             <div><span>System load</span><strong>{overview?.loadOne.toFixed(2) ?? "—"}</strong><small>one minute</small></div>
@@ -118,6 +127,10 @@ export function ProcessPicker({ onSelect, sessions, openingSession, onOpenSessio
             ))}
             {!loading && !error && processes.length === 0 && <div className="list-message">No visible process matches “{query}”.</div>}
           </div>
+          <details className="managed-launch">
+            <summary><span>Launch under Stasis</span><small>Start inside a dedicated cgroup</small></summary>
+            <div><input value={launchCommand} onChange={(event) => setLaunchCommand(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); launch(); } }} placeholder="Command, arguments, or script path" spellCheck={false} /><button onClick={launch} disabled={!launchCommand.trim() || launching}>{launching ? <CircleNotch className="spinning" /> : <TerminalWindow />} {launching ? "Launching…" : "Launch"}</button></div>
+          </details>
           <footer className="selector-footer">
             <span>Process identity uses PID and start time.</span>
             <button className="primary-button" disabled={!chosen} onClick={() => attach()}>

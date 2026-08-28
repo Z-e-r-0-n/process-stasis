@@ -1,44 +1,75 @@
-import { ArrowClockwise, CheckCircle, CircleNotch, LockKey, PauseCircle, ShieldWarning, Snowflake, WarningCircle } from "@phosphor-icons/react";
+import {
+  ArrowClockwise, CircleNotch, Pause, Play, Snowflake, TreeStructure, WarningCircle,
+} from "@phosphor-icons/react";
 import { useState } from "react";
 import type { ContainmentOutcome, ContainmentStatus } from "../types";
 
 interface Props {
   status?: ContainmentStatus;
-  recording: boolean;
   busy: boolean;
   onRefresh: () => void;
-  onApply: (freeze: boolean, reason: string, acknowledged: boolean) => Promise<ContainmentOutcome | undefined>;
+  onApply: (freeze: boolean) => Promise<ContainmentOutcome | undefined>;
 }
-export function ContainmentPanel({ status, recording, busy, onRefresh, onApply }: Props) {
-  const [reason, setReason] = useState("");
-  const [acknowledged, setAcknowledged] = useState(false);
+
+export function ContainmentPanel({ status, busy, onRefresh, onApply }: Props) {
   const [error, setError] = useState("");
   const apply = async () => {
     setError("");
-    try { await onApply(!status?.frozen, reason, acknowledged); }
-    catch (value) { setError(String(value)); }
+    try {
+      await onApply(!status?.frozen);
+    } catch (value) {
+      setError(String(value));
+    }
   };
-  const ready = Boolean(status?.available && recording && reason.trim().length >= 8 && acknowledged);
+  const state = status?.frozen ? "frozen" : status?.managed ? "managed" : "observed";
+  const actionLabel = status?.frozen ? "Resume tree" : status?.managed ? "Freeze tree" : "Acquire & freeze";
 
-  return <section className="containment-workspace">
-    <header className="containment-hero"><div><span className="view-kicker">Explicit control plane</span><h1>Contain only what can be proven.</h1><p>Freeze is enabled only for an exclusive, writable, non-root cgroup whose live membership exactly matches the tracked scope.</p></div><button className="icon-button" onClick={onRefresh} title="Recheck containment gates"><ArrowClockwise className={busy ? "spinning" : ""} /></button></header>
-    <div className="containment-layout">
-      <article className={`freeze-card ${status?.frozen ? "frozen" : ""}`}>
-        <div className="freeze-visual"><span className="freeze-ring"><Snowflake weight="duotone" /></span><i /></div>
-        <div className="freeze-copy"><span>Process-tree state</span><h2>{status?.frozen ? "Verified frozen" : status?.available ? "Ready for verified freeze" : "Control unavailable"}</h2><p>{status?.reason ?? "Checking kernel and scope gates…"}</p>{status?.cgroupPath && <code>{status.cgroupPath}</code>}</div>
-        <div className="control-form">
-          <label><span>Operator reason</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={3} placeholder="Why is this state-changing action necessary?" /></label>
-          <label className="authorization-check"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} /><span><CheckCircle weight={acknowledged ? "fill" : "regular"} /> I am authorized to change this process group.</span></label>
-          {!recording && <div className="control-requirement"><PauseCircle /> Start evidence recording before a control action.</div>}
-          {error && <div className="control-error"><WarningCircle />{error}</div>}
-          <button className={status?.frozen ? "thaw-button" : "freeze-button"} disabled={!ready || busy} onClick={apply}>{busy ? <CircleNotch className="spinning" /> : status?.frozen ? <PauseCircle /> : <Snowflake />}{status?.frozen ? "Verify and thaw" : "Verify and freeze"}</button>
+  return <section className={`containment-workspace state-${state}`}>
+    <header className="containment-hero">
+      <div><span className="view-kicker">Process control</span><h1>Hold the tree without killing it.</h1><p>One action acquires the selected process and its visible descendants, then asks the kernel to stop or resume the group.</p></div>
+      <button className="icon-button" onClick={onRefresh} title="Refresh process state"><ArrowClockwise className={busy ? "spinning" : ""} /></button>
+    </header>
+
+    <div className="containment-stage">
+      <article className="control-command-card">
+        <div className="stasis-orbit" aria-hidden="true"><span /><span /><Snowflake weight="duotone" /></div>
+        <div className="control-state-copy">
+          <span className="state-label">{state}</span>
+          <h2>{status?.summary ?? "Reading the selected process…"}</h2>
+          <p>{status?.managed ? status.cgroupPath : "The tree is not currently in a managed group."}</p>
         </div>
+        {error && <div className="control-error"><WarningCircle /> <span>{error}</span></div>}
+        <button className="stasis-action" disabled={!status?.available || busy} onClick={apply}>
+          {busy ? <CircleNotch className="spinning" /> : status?.frozen ? <Play weight="fill" /> : <Pause weight="fill" />}
+          <span>{busy ? "Working…" : actionLabel}</span>
+        </button>
       </article>
-      <aside className="gate-panel"><header><LockKey /><div><h2>Safety gates</h2><p>Every gate must pass at action time.</p></div></header>
-        <div className="gate-list">{status?.gates.map((gate) => <div className={gate.passed ? "passed" : "failed"} key={gate.id}>{gate.passed ? <CheckCircle weight="fill" /> : <WarningCircle weight="fill" />}<span><b>{gate.label}</b><small>{gate.detail}</small></span></div>) ?? <div className="gate-loading"><CircleNotch className="spinning" /> Inspecting cgroup state…</div>}</div>
+
+      <aside className="control-detail-panel">
+        <div className="control-progress">
+          <StateStep label="Observed" active />
+          <i className={status?.managed ? "active" : ""} />
+          <StateStep label="Acquired" active={Boolean(status?.managed)} />
+          <i className={status?.frozen ? "active" : ""} />
+          <StateStep label="Frozen" active={Boolean(status?.frozen)} />
+        </div>
+        <div className="managed-scope">
+          <header><TreeStructure /><div><span>Managed scope</span><strong>{status?.members.length ?? 0} processes</strong></div></header>
+          <div className="member-cloud">
+            {status?.members.slice(0, 18).map((member) => <code key={member.id}>PID {member.pid}</code>)}
+            {!status?.members.length && <p>The process tree will appear here after acquisition.</p>}
+            {(status?.members.length ?? 0) > 18 && <code>+{status!.members.length - 18}</code>}
+          </div>
+        </div>
+        <details className="control-technical">
+          <summary>Technical state</summary>
+          <dl><div><dt>Kernel interface</dt><dd>{status?.supported ? "cgroup v2" : "Unavailable"}</dd></div><div><dt>Group</dt><dd>{status?.cgroupPath ?? "Not acquired"}</dd></div><div><dt>State</dt><dd>{status?.frozen ? "frozen=1" : "frozen=0"}</dd></div></dl>
+        </details>
       </aside>
-      <article className="network-boundary"><ShieldWarning /><div><span>Network restriction</span><h3>{status?.networkRestrictionAvailable ? "Available" : "Not installed"}</h3><p>{status?.networkReason ?? "Checking capability…"}</p></div></article>
-      <article className="containment-contract"><h3>Failure contract</h3><ul><li>No signal is sent when any gate fails.</li><li>A freeze is accepted only after <code>cgroup.events</code> confirms it.</li><li>If membership changes during freeze verification, the group remains frozen for review.</li><li>Thaw is always a separate, recorded operator action.</li></ul></article>
     </div>
   </section>;
+}
+
+function StateStep({ label, active }: { label: string; active: boolean }) {
+  return <div className={active ? "active" : ""}><span>{active ? "●" : "○"}</span><b>{label}</b></div>;
 }

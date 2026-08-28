@@ -133,3 +133,8 @@ checkpointed state to a fresh execution while calling it equivalent.
   cgroup v2 freeze/thaw with exact recursive membership, authorization reason,
   active recording, and request/result audit trail. Controlled launch and network
   restriction remain separate safety milestones.
+- **0.8 — managed control and interaction redesign (complete):** Polkit-elevated
+  managed launch, bounded live-tree stop/rescan/acquisition, verified freeze and
+  resume, automatic journaling and frozen-state inspection, a stable incremental
+  lineage layout, branch folding, bundled readable fonts, a role-based light
+  palette, and a compact one-action Control workspace.

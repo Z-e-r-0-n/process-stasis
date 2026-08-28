@@ -6,11 +6,13 @@ complexity only when the operator asks for it.
 
 ## Visual system
 
-- Warm neutral canvas, white working surfaces, dark neutral text.
-- Blue is the primary interaction color. Purple, orange, red, and green are
+- Warm bone canvas, ivory working surfaces, graphite text.
+- Cobalt is the primary interaction color. Violet, coral, red, and teal are
   reserved for distinct data or semantic roles; never wash the whole interface
   in one accent.
-- Body copy is 14–15 px where space permits. Supporting labels are 10–12 px.
+- Manrope Variable is bundled for the interface and JetBrains Mono Variable for
+  identifiers. Body copy is 14–16 px where space permits. Supporting labels are
+  10–12 px.
   Monospace is limited to identifiers, paths, hashes, commands, and raw evidence.
 - Use borders and spacing to organize regions. Shadows are shallow and sparse.
 - Motion explains a state or view change. Keep it short, respect reduced-motion,
@@ -25,6 +27,8 @@ complexity only when the operator asks for it.
 - **Inspect:** process selection plus deep details, files, sockets, mappings, and
   environment data.
 - **Session:** recording state, export, collection boundaries, and case identity.
+- **Control:** one acquire/freeze or resume action, a three-state progress line,
+  managed members, and disclosed technical state.
 
 Exited nodes stay available. If the focus exits, offer a direct route to a known
 living descendant. The collection continues independently from a paused graph.
@@ -36,6 +40,8 @@ living descendant. The collection continues independently from a paused graph.
 - Use disclosure and tabs instead of shrinking text to fit more panels.
 - Never hide collection limitations, but put them in the Session view and export
   metadata rather than repeating defensive slogans throughout the interface.
+- Do not remount or refit the lineage graph on snapshot updates. Animate only
+  newly observed nodes and explicit state transitions.
 - Test the desktop layout at 1280×720 and the configured minimum window size.
 
 ## References

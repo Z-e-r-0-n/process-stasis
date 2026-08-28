@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Process Stasis</vendor>
+  <vendor_url>https://github.com/Z-e-r-0-n/process-stasis</vendor_url>
+  <action id="io.process-stasis.desktop.control">
+    <description>Control a selected Linux process tree</description>
+    <message>Authentication is required to acquire or freeze a process tree</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/process-stasis</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--process-stasis-helper</annotate>
+  </action>
+</policyconfig>

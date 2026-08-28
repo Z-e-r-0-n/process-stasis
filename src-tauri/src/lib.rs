@@ -36,6 +36,13 @@ fn get_system_overview() -> SystemOverview {
 }
 
 #[tauri::command]
+async fn launch_under_stasis(command: String) -> Result<ProcessListItem, String> {
+    tauri::async_runtime::spawn_blocking(move || containment::launch_managed(&command))
+        .await
+        .map_err(|error| format!("managed launch task failed: {error}"))?
+}
+
+#[tauri::command]
 fn start_tracking(
     pid: i32,
     start_time_ticks: Option<u64>,
@@ -118,25 +125,54 @@ fn get_containment_status(
     state: State<'_, TrackerState>,
 ) -> Result<ContainmentStatus, String> {
     let snapshot = state.latest_snapshot(&session_id)?;
-    Ok(containment::status(Some(&snapshot)))
+    Ok(containment::status(&session_id, Some(&snapshot)))
 }
 
 #[tauri::command]
-fn set_containment_frozen(
+async fn set_containment_frozen(
     session_id: String,
     freeze: bool,
-    reason: String,
-    acknowledged: bool,
     state: State<'_, TrackerState>,
 ) -> Result<ContainmentOutcome, String> {
-    if !state.is_recording_active(&session_id) {
-        return Err("Start evidence recording before changing containment state.".into());
+    let tracker = state.inner().clone();
+    let recording = if tracker.is_recording_active(&session_id) {
+        tracker.recording_info(&session_id)?
+    } else {
+        tracker.start_recording(&session_id)?
+    };
+    let snapshot = tracker.latest_snapshot(&session_id)?;
+    tracker.record_control_request(
+        &session_id,
+        if freeze { "freeze" } else { "thaw" },
+        "desktop-control",
+    )?;
+    let helper_session = session_id.clone();
+    let (status, action) = tauri::async_runtime::spawn_blocking(move || {
+        containment::set_frozen(&helper_session, &snapshot, freeze)
+    })
+    .await
+    .map_err(|error| format!("containment task failed: {error}"))??;
+    tracker.record_control_action(&session_id, &action)?;
+    if freeze {
+        let identities = action.affected_processes.clone();
+        let inspections = tauri::async_runtime::spawn_blocking(move || {
+            identities
+                .into_iter()
+                .take(256)
+                .filter_map(|key| procfs::inspect_process(key.pid, Some(key.start_time_ticks)).ok())
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|error| format!("frozen evidence capture failed: {error}"))?;
+        for process in inspections {
+            tracker.record_inspection(&session_id, process)?;
+        }
     }
-    let snapshot = state.latest_snapshot(&session_id)?;
-    state.record_control_request(&session_id, if freeze { "freeze" } else { "thaw" }, &reason)?;
-    let outcome = containment::set_frozen(&snapshot, freeze, &reason, acknowledged)?;
-    state.record_control_action(&session_id, &outcome.action)?;
-    Ok(outcome)
+    Ok(ContainmentOutcome {
+        status,
+        action,
+        recording,
+    })
 }
 
 #[tauri::command]
@@ -186,6 +222,7 @@ pub fn run() {
             list_processes,
             get_process_details,
             get_system_overview,
+            launch_under_stasis,
             start_tracking,
             stop_tracking,
             start_recording,
@@ -202,4 +239,8 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Process Stasis");
+}
+
+pub fn privileged_helper_exit_code() -> Option<i32> {
+    containment::helper_exit_code_from_args()
 }
