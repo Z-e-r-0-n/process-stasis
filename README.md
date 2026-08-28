@@ -34,7 +34,10 @@ itself does not run as root.
 10. Capture a bounded deep inspection for acquired members immediately after a
     successful freeze.
 
-The exact collection fields, workflow, export shape, and limitations are in
+Start with [`docs/TECHNICAL-OVERVIEW.md`](docs/TECHNICAL-OVERVIEW.md) for the
+complete working model, technology stack, component map, runtime data flow,
+privilege boundary, containment transaction, packaging model, and current limits.
+The exhaustive collection fields, workflow, and export contract are in
 [`docs/DESKTOP-WORKFLOW.md`](docs/DESKTOP-WORKFLOW.md). The older `0.1` Python
 snapshot collector is documented in
 [`docs/CURRENT-WORKFLOW.md`](docs/CURRENT-WORKFLOW.md).
