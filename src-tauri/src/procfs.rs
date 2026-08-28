@@ -1,6 +1,6 @@
 use crate::types::{
-    FileDescriptor, NamespaceEntry, ProcessDetails, ProcessKey, ProcessListItem, SocketEntry,
-    SystemOverview,
+    ExecutableMetadata, FileDescriptor, NamespaceEntry, ProcessDetails, ProcessKey,
+    ProcessListItem, SocketEntry, SystemOverview,
 };
 use chrono::Utc;
 use sha2::{Digest, Sha256};
@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
@@ -247,6 +248,10 @@ pub fn inspect_process(pid: i32, expected_start: Option<u64>) -> Result<ProcessD
         || read_sockets(pid, &socket_inodes),
         Vec::new(),
     );
+    let executable = read_link_string(proc_dir.join("exe"));
+    let executable_metadata = capture_optional(&mut errors, "executable metadata", || {
+        read_executable_metadata(&proc_dir.join("exe"), executable.as_deref())
+    });
     let final_identity = read_basic(pid)?;
     if initial.start_time_ticks != final_identity.start_time_ticks {
         return Err("PID identity changed during detail capture".into());
@@ -259,10 +264,11 @@ pub fn inspect_process(pid: i32, expected_start: Option<u64>) -> Result<ProcessD
         comm: initial.comm,
         state: initial.state,
         command_line,
-        executable: read_link_string(proc_dir.join("exe")),
+        executable,
         executable_sha256: capture_optional(&mut errors, "executable hash", || {
             hash_file(&proc_dir.join("exe"))
         }),
+        executable_metadata,
         cwd: read_link_string(proc_dir.join("cwd")),
         root: read_link_string(proc_dir.join("root")),
         environment: capture_or(
@@ -300,6 +306,27 @@ pub fn inspect_process(pid: i32, expected_start: Option<u64>) -> Result<ProcessD
         file_descriptors,
         sockets,
         collection_errors: errors,
+    })
+}
+
+fn read_executable_metadata(
+    path: &Path,
+    display_path: Option<&str>,
+) -> io::Result<ExecutableMetadata> {
+    let metadata = fs::metadata(path)?;
+    Ok(ExecutableMetadata {
+        size_bytes: metadata.size(),
+        modified_at: metadata
+            .modified()
+            .ok()
+            .map(chrono::DateTime::<Utc>::from)
+            .map(|value| value.to_rfc3339()),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        mode: metadata.mode(),
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        deleted: display_path.is_some_and(|value| value.ends_with(" (deleted)")),
     })
 }
 
@@ -413,9 +440,14 @@ fn read_namespaces(pid: i32) -> io::Result<Vec<NamespaceEntry>> {
     let mut namespaces = Vec::new();
     for entry in fs::read_dir(directory)?.flatten() {
         if let Ok(identifier) = fs::read_link(entry.path()) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let differs_from_observer = fs::read_link(format!("/proc/self/ns/{name}"))
+                .map(|observer| observer != identifier)
+                .unwrap_or(false);
             namespaces.push(NamespaceEntry {
-                name: entry.file_name().to_string_lossy().into_owned(),
+                name,
                 identifier: identifier.to_string_lossy().into_owned(),
+                differs_from_observer,
             });
         }
     }

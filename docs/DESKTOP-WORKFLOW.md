@@ -1,153 +1,210 @@
-# Desktop observer workflow and collected data
+# Desktop workflow and evidence contract
 
-This document describes the implemented Process Stasis `0.3.0` desktop observer.
-The older Python snapshot collector remains available and is documented in
+This document describes the implemented Process Stasis `0.7.0` desktop
+application. The Python `0.1` point-in-time collector remains documented in
 [`CURRENT-WORKFLOW.md`](CURRENT-WORKFLOW.md).
 
-## What the desktop application does
+## Product boundary
 
-The application accepts one visible Linux PID and creates a live, temporal view
-of that process, its ancestors, and its observed descendants. It reads procfs. It
-does not signal, pause, inject into, debug, contain, terminate, or modify the
-target.
+The application has three implemented paths:
+
+1. **Observe** follows one authorized PID and its visible descendants without
+   sending a signal or changing execution.
+2. **Investigate** records, reopens, searches, annotates, compares, and exports
+   the evidence collected by Observe.
+3. **Control** can request cgroup v2 freeze or thaw only when every safety gate
+   below passes. It does not move processes between cgroups.
+
+It does not capture syscall arguments, packets, file contents, or memory; block
+network traffic; terminate a process; migrate execution; emulate libc/syscalls;
+restore a checkpoint; or launch a replay VM.
 
 ```text
-choose PID -> pin identity -> discover scoped family -> stream samples and inferred events
-           -> retain exited nodes -> inspect a selected node -> journal/export JSON
+choose PID
+  -> verify PID + start time
+  -> follow scoped temporal family
+  -> stream snapshots + normalized lifecycle events
+  -> optionally journal evidence
+  -> inspect / search / annotate / compare
+  -> export JSON or HTML
+  -> optionally verify gates -> record request -> freeze/thaw -> verify result
 ```
 
-No acknowledgement or investigation-reason form is required by the local UI.
-The operator is still responsible for selecting only processes they own or are
-authorized to inspect.
+## Attach, identity, and scope
 
-## Exact attach and tracking sequence
+1. The picker scans numeric `/proc` entries and displays visible PID, PPID, task
+   name, command, UID/user, state, RSS, threads, and age.
+2. The selected PID and its expected `/proc/PID/stat` start-time ticks are passed
+   to Rust. Attach fails if that identity changed after the picker sample.
+3. Stable keys contain boot ID, PID, and start-time ticks. The observer also
+   attempts `pidfd_open` for every retained identity.
+4. Visible ancestors are retained as context. They cannot introduce siblings.
+5. The focus process and known living descendants can introduce children.
+6. The initial scan recursively includes visible descendants. Later scans repeat
+   child discovery so a parent and grandchild found in one sample are both added.
+7. Exited nodes and edges remain in the graph. If the focus exits, collection
+   continues for already known living descendants.
 
-1. The picker scans numeric `/proc` entries and reads each visible process.
-2. Selecting a row passes its PID and expected start-time ticks to the native
-   observer. Attach is rejected if the PID was recycled after the picker sample.
-3. The observer reads `/proc/PID/stat`, builds a stable key from
-   `boot ID + PID + process start-time ticks`, and attempts `pidfd_open` for each
-   tracked identity. Start time remains the fallback when pidfds are unavailable.
-4. It walks the current PPID chain to visible ancestors, then recursively
-   discovers currently visible descendants.
-5. Every 500 ms it rescans procfs, polls open pidfds, updates metrics for known
-   live identities, and discovers processes whose current parent is the selected
-   process or a known live descendant. Ancestors cannot expand collection to
-   their other children.
-6. A new child produces an inferred `spawn` event and a retained edge.
-7. A changed task name or executable symlink produces an inferred `exec` event.
-8. A missing stable identity produces an inferred `exit` event. Its last known
-   node and parent edge remain in the graph.
-9. If the original focus process exits, sampling continues for every known live
-   child. The focus process is not silently replaced.
-10. Selecting a live node performs a deeper point-in-time procfs inspection. The
-    PID start time is checked before and after capture to reject PID reuse.
-11. Export writes versioned JSON through a temporary file and atomic rename. The
-    resulting file has mode `0600`.
+The graph is an observed temporal reconstruction, not an audit log. A process
+that forks, execs, and exits entirely between 500 ms samples can be missed.
 
-The pause button freezes only graph presentation. Collection continues. The
-record button appends one graph snapshot every two seconds plus every lifecycle
-event to a native JSONL journal. The recording directory is mode `0700`, journal
-files are mode `0600`, data is synced at most every ten seconds and on stop, and
-recording stops at a 32 MiB safety limit. Recording can be paused and resumed in
-the same tracking session. The latest snapshot and 15-minute UI telemetry buffer
-still exist without recording.
+## Event sources and confidence
 
-## Live process-list fields
+| Event | Source label | Confidence |
+|---|---|---|
+| Attach/detach | `observer` | exact application action |
+| Spawn | `procfs-diff` | inferred from a newly visible stable child identity |
+| Exec | `procfs-diff` | inferred from a changed task name or executable link |
+| Exit | `procfs+pidfd` | observed missing identity, with retained pidfd polling when available |
 
-| UI field | Linux source or derivation |
+The collector profile states that the active source is
+`procfs-polling+pidfd`. Kernel lifecycle streaming is reported as unavailable;
+the application does not imply that eBPF, audit, or process connector telemetry
+is installed.
+
+## Graph samples and telemetry
+
+Every 500 ms sample contains:
+
+- session, sequence, UTC timestamp, focus key, focus-live status, and counts;
+- every retained node's stable key, current PPID and retained parent key;
+- task name, command, executable, UID/user, state, and role flags;
+- identity guard, discovery time, exit time, and process age;
+- CPU, RSS, virtual memory, read/write totals, threads, and descriptor count;
+- retained parent edges, their discovery time, relationship, and live/historical state.
+
+CPU is the change in user plus system ticks divided by elapsed wall time and
+kernel clock frequency. Multi-threaded processes can exceed 100 percent.
+
+The graph pause button pauses presentation only. Live collection continues. The
+UI retains up to 1,800 metric points per selected identity and 1,800 two-second
+comparison snapshots.
+
+## Deep inspection
+
+A selected live process is identity-checked before and after collection. The
+inspection contains:
+
+| Evidence | Source / derivation |
 |---|---|
-| Stable key | `/proc/sys/kernel/random/boot_id`, PID, `/proc/PID/stat` start time |
-| PID, PPID, name, state, threads | `/proc/PID/stat` |
-| Command | `/proc/PID/cmdline`, falling back to stat name |
-| Executable | `/proc/PID/exe` symlink |
-| UID and user | `/proc/PID/status` and `/etc/passwd` |
-| Resident memory | stat RSS pages × system page size |
-| Age | system uptime minus process start time |
+| Arguments | `/proc/PID/cmdline` |
+| Status/security fields | `/proc/PID/status` |
+| Executable, cwd, root | `/proc/PID/{exe,cwd,root}` links |
+| Executable SHA-256 | bytes through `/proc/PID/exe`, maximum 512 MiB |
+| Executable file identity | size, modification time, device, inode, mode, UID, GID, deleted-link state |
+| Environment | `/proc/PID/environ`, maximum 2 MiB; values hidden in UI |
+| I/O, cgroup, limits, maps | corresponding procfs files |
+| Namespaces | `/proc/PID/ns/*`, compared with the observer's namespace IDs |
+| Descriptors | maximum 8,192 links plus bounded `fdinfo` position/flags |
+| Process-owned sockets | FD inode correlation with target network-namespace proc tables |
 
-Search matches PID, task name, or command. Results are ordered by RSS and capped
-at 300 in the current UI.
+Other text reads are capped at 4 MiB. Permission failures and races are retained
+as collection errors. Behavioral observations are deterministic hints such as a
+deleted/transient executable, root identity, missing NoNewPrivs/seccomp, an
+unusual descriptor count, or non-loopback sockets. They are not a threat score or
+malicious/benign verdict.
 
-## Data in every graph sample
+When recording is active, a deep refresh is appended as an `inspection` journal
+entry. A historical session exposes only inspections actually preserved in that
+journal.
 
-Each retained node contains its stable key; PID; PPID; retained parent key; task
-name; command; executable; UID and user; state; live/exited, focus, and ancestor
-flags; identity guard (`pidfd+start-time` or `start-time`); discovery and exit
-timestamps; age; CPU percentage; RSS; virtual memory; cumulative read/write
-bytes; thread count; and open-FD count.
+## Native journal and case storage
 
-Each snapshot contains the UTC sample time, sequence, root identity, root-live
-status, live/exited counts, all retained edges, and the polling limitation flag.
+The application data `recordings/` directory is mode `0700`. Each journal is
+`SESSION_UUID.jsonl`, opened with `O_NOFOLLOW`, mode `0600`, and limited to
+32 MiB.
 
-CPU percentage is the change in user plus system CPU ticks divided by elapsed
-wall time and the kernel clock-tick frequency. A multi-threaded process can
-exceed 100 percent.
+The journal contains:
 
-## Deep inspection fields
+- a versioned header with the target identity;
+- every lifecycle event;
+- one graph snapshot every four samples (two seconds);
+- pause/resume/end markers;
+- preserved deep inspections;
+- containment requests and verified control results.
 
-| Data | Source |
-|---|---|
-| Command arguments | `/proc/PID/cmdline` |
-| Name, state, IDs, capabilities, seccomp, memory status | `/proc/PID/status` |
-| Executable, working directory, process root | `/proc/PID/{exe,cwd,root}` symlinks |
-| Executable SHA-256 | `/proc/PID/exe`, maximum 512 MiB |
-| Environment | `/proc/PID/environ`, maximum 2 MiB |
-| I/O counters | `/proc/PID/io` |
-| Cgroup membership and resource limits | `/proc/PID/{cgroup,limits}` |
-| Memory mappings | `/proc/PID/maps` |
-| Namespace identifiers | `/proc/PID/ns/*` symlinks |
-| File descriptors | `/proc/PID/fd/*` plus position/flags from `fdinfo` |
-| Owned sockets | FD inodes correlated with `/proc/PID/net/{tcp,tcp6,udp,udp6,unix}` |
+Data is flushed during custom evidence writes, synced at most every ten seconds
+during the normal stream, and fully synced on stop/end. Reopening tolerates one
+trailing partial JSONL line, records that recovery condition in the session
+summary, and rejects corruption elsewhere.
 
-Text reads are capped at 4 MiB unless a smaller limit is stated. FD enumeration
-is capped at 8,192. Failed or permission-denied reads become collection errors,
-not successful empty evidence. Environment values are masked until revealed.
+Case metadata is a separate `SESSION_UUID.case.json` sidecar, also mode `0600`
+and atomically replaced. It stores title, summary, tags, notes, and event
+bookmarks. Keeping annotations separate prevents a later human interpretation
+from rewriting the original append-only observations.
 
-## Export structure
+The launcher scans valid journals after restart. Each displayed session includes
+target, counts, updated time, case title/tags, SHA-256 of the journal, and partial
+tail status.
 
-Exported JSON uses `process-stasis/session-v0.3`:
+## Timeline and comparison
+
+The timeline can search message, command/name, PID, and source; filter by event
+kind, warning severity, and time window; jump to the related process; and create
+or remove an event bookmark.
+
+Snapshot comparison selects an earlier retained graph state and compares it with
+the current displayed state. It reports stable identities that appeared or
+exited, task/executable image changes, and total live RSS delta. This is an
+in-session comparison, not a byte-for-byte memory diff.
+
+## Export contract
+
+JSON exports use `process-stasis/session-v0.7` and contain:
 
 ```text
-schema
-exportedAt
-collection { mode, intervalMs, inferredLifecycleEvents, identity, recording, limitations[] }
+schema, exportedAt
+case { title, summary, tags, annotations[] }
+redaction { environmentValuesIncluded }
+collector { activeSource, lifecyclePrecision, sampleIntervalMs, capabilities[] }
 target { pid, startTimeTicks, command }
-session { id, recordingStartedAt, latestSequence, journal }
+session { id, journal }
 latestSnapshot
 snapshots[]
 lifecycleEvents[]
-selectedProcessDetails
+inspections[]
+controlActions[]
+limitations[]
 ```
 
-Exports are limited to 64 MiB. Environment, command-line, file, mapping, and
-socket metadata may be sensitive despite mode `0600`. Do not save evidence into
-a synchronized or shared directory unintentionally.
+The default JSON export replaces each environment value with `<redacted>` while
+retaining the variable name. A separate explicit action exports full environment
+values. HTML reports are escaped, contain no executable target markup, omit
+environment values, and include at most the latest 500 lifecycle events. Atomic
+export writes are limited to 64 MiB and use mode `0600`.
 
-## What “process tree” means here
+## Verified cgroup freeze/thaw
 
-The application reconstructs an **observed temporal process graph**, not an
-authoritative audit log.
+Control is unavailable unless all gates pass:
 
-- The initial view includes the visible ancestor chain as context and recursively
-  visible descendants at attach time.
-- After attach, only the selected identity and known descendants can introduce
-  new children; an ancestor's unrelated children are explicitly out of scope.
-- Later edges are inferred from repeated PPID observations.
-- Exited identities and observed edges remain available.
-- PID reuse is distinguished by pidfd identity when available and always checked
-  against start-time ticks.
-- A process that starts and exits entirely between scans can be missed.
-- A process reparented before a scan may appear without its original edge.
-- `exec` is inferred from visible changes and can miss a short-lived image.
+1. unified cgroup v2 is mounted;
+2. the tracking session has a current live focus/descendant scope;
+3. every living tracked member reports the same unified cgroup;
+4. that cgroup is not `/`;
+5. recursively enumerating the cgroup subtree (maximum depth 32 and 4,096 PIDs)
+   finds exactly the tracked living PIDs and no unrelated PID;
+6. `cgroup.freeze` is writable by the application user;
+7. every PID still has the expected start-time ticks immediately before action;
+8. evidence recording is active;
+9. the operator provides a printable 8–500 character reason and checks the
+   authorization acknowledgement.
 
-These limits are displayed and written into every export. Kernel event tracing
-is a planned upgrade, not an implemented claim.
+The native backend records the request, writes `1` (freeze) or `0` (thaw), then
+polls `cgroup.events` for up to one second. A result is successful only when the
+kernel reports the requested `frozen` value and membership is still exact. If a
+freeze succeeds but membership changes during verification, the group remains
+frozen and the result says that operator review is required. The application
+never silently thaws or kills the target.
 
-## Explicit non-features in version 0.3
+Network restriction is deliberately unavailable. It requires a separately
+audited privileged helper; the WebView is not elevated and a container is not
+treated as the sole hostile-code boundary.
 
-- no syscall, library-call, packet, DNS, or file-content capture;
-- no memory dump, stack unwind, or core dump;
-- no signals, ptrace, seccomp injection, freezing, or cgroup movement;
-- no threat verdict, automated remediation, or termination;
-- no container/VM migration, checkpoint, replay, deception, or containment;
-- no claim that polling produces an atomic or complete historical record.
+## Remaining boundaries
+
+- No kernel fork/exec event stream is installed, so sub-sample activity can be missed.
+- No syscall arguments, library calls, packet contents, DNS, or file-content timeline.
+- No cgroup creation/launcher or arbitrary live-tree cgroup migration.
+- No network policy helper, ptrace injection, signal-based pause, or termination.
+- No VM replay, environment simulation, syscall mediation, or CRIU restore.
+- No automatic verdict or remediation decision.

@@ -3,8 +3,9 @@
 This document describes implemented behavior in version `0.1.0`. Planned freeze,
 tree capture, replay, and reporting features are not described as current behavior.
 
-> This is the legacy Python CLI workflow. The `0.2.0` desktop observer now
-> implements live descendant discovery and a retained temporal graph; see
+> This is the legacy Python CLI workflow. The `0.7.0` desktop application now
+> implements live descendant discovery, retained temporal evidence, reopenable
+> cases, and strictly gated cgroup freeze/thaw; see
 > [`DESKTOP-WORKFLOW.md`](DESKTOP-WORKFLOW.md).
 
 ## Current input

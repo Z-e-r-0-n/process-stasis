@@ -1,11 +1,14 @@
+use crate::case_store;
 use crate::procfs::{
     boot_id, clock_ticks, enrich_process, passwd_map, scan_processes, uptime_seconds, BasicProcess,
 };
 use crate::types::{
-    GraphEdge, GraphSnapshot, LifecycleEvent, ProcessNode, RecordedCapture, RecordingInfo,
-    TrackingMessage,
+    CaseMetadata, CollectorCapability, CollectorProfile, ControlAction, GraphEdge, GraphSnapshot,
+    InspectionCapture, LifecycleEvent, ProcessDetails, ProcessNode, RecordedCapture, RecordingInfo,
+    SessionSummary, SessionTarget, TrackingMessage,
 };
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -36,6 +39,8 @@ pub struct TrackerState {
 struct SessionControl {
     cancelled: AtomicBool,
     recording: Mutex<RecordingSlot>,
+    latest_snapshot: Mutex<Option<GraphSnapshot>>,
+    target: SessionTarget,
 }
 
 #[derive(Default)]
@@ -80,10 +85,19 @@ impl TrackerState {
         validate_expected_identity(&root, expected_start_time_ticks)?;
         let boot = boot_id();
         let root_key = root.key(&boot).id;
+        let users = passwd_map();
+        let root_enrichment = enrich_process(&root, &users);
+        let target = SessionTarget {
+            key: root.key(&boot),
+            comm: root.comm.clone(),
+            command: root_enrichment.command,
+        };
         let session_id = Uuid::new_v4().to_string();
         let control = Arc::new(SessionControl {
             cancelled: AtomicBool::new(false),
             recording: Mutex::new(RecordingSlot::default()),
+            latest_snapshot: Mutex::new(None),
+            target,
         });
 
         self.sessions
@@ -147,16 +161,129 @@ impl TrackerState {
     }
 
     pub fn read_recording(&self, session_id: &str) -> Result<RecordedCapture, String> {
-        self.control_from_history(session_id)?.read_recording()
+        if let Ok(control) = self.control_from_history(session_id) {
+            return control.read_recording();
+        }
+        read_recording_from_disk(&self.recording_root, session_id)
+    }
+
+    pub fn list_recordings(&self) -> Result<Vec<SessionSummary>, String> {
+        list_recordings(&self.recording_root)
+    }
+
+    pub fn read_case_metadata(&self, session_id: &str) -> Result<CaseMetadata, String> {
+        case_store::read_metadata(&self.recording_root, session_id)
+    }
+
+    pub fn write_case_metadata(
+        &self,
+        session_id: &str,
+        metadata: CaseMetadata,
+    ) -> Result<CaseMetadata, String> {
+        case_store::write_metadata(&self.recording_root, session_id, metadata)
+    }
+
+    pub fn record_inspection(
+        &self,
+        session_id: &str,
+        process: ProcessDetails,
+    ) -> Result<InspectionCapture, String> {
+        self.control_from_history(session_id)?
+            .record_inspection(process)
+    }
+
+    pub fn latest_snapshot(&self, session_id: &str) -> Result<GraphSnapshot, String> {
+        self.control_from_history(session_id)?
+            .latest_snapshot
+            .lock()
+            .map_err(|_| "tracking snapshot is unavailable".to_string())?
+            .clone()
+            .ok_or_else(|| "tracking has not produced a snapshot yet".into())
+    }
+
+    pub fn is_recording_active(&self, session_id: &str) -> bool {
+        self.control_from_history(session_id)
+            .ok()
+            .and_then(|control| {
+                control
+                    .recording
+                    .lock()
+                    .ok()
+                    .map(|slot| slot.journal.is_some())
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn record_control_action(
+        &self,
+        session_id: &str,
+        action: &ControlAction,
+    ) -> Result<(), String> {
+        self.control_from_history(session_id)?
+            .record_value(&serde_json::json!({ "type": "controlAction", "payload": action }))
+    }
+
+    pub fn record_control_request(
+        &self,
+        session_id: &str,
+        action: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        self.control_from_history(session_id)?
+            .record_value(&serde_json::json!({
+                "type": "controlRequest",
+                "payload": {
+                    "timestamp": Utc::now().to_rfc3339(),
+                    "action": action,
+                    "reason": reason
+                }
+            }))
     }
 
     fn control_from_history(&self, session_id: &str) -> Result<Arc<SessionControl>, String> {
+        if let Some(control) = self
+            .sessions
+            .lock()
+            .map_err(|_| "tracker state is unavailable".to_string())?
+            .get(session_id)
+            .cloned()
+        {
+            return Ok(control);
+        }
         self.history
             .lock()
             .map_err(|_| "tracker history is unavailable".to_string())?
             .get(session_id)
             .cloned()
             .ok_or_else(|| "recording session is unknown".to_string())
+    }
+}
+
+pub fn collector_profile() -> CollectorProfile {
+    CollectorProfile {
+        active_source: "procfs-polling+pidfd".into(),
+        lifecycle_precision: "inferred-except-pidfd-exit".into(),
+        sample_interval_ms: SAMPLE_INTERVAL.as_millis() as u64,
+        capabilities: vec![
+            CollectorCapability {
+                id: "procfs".into(),
+                label: "Procfs sampling".into(),
+                state: "active".into(),
+                detail: "Identity, lineage, resources, descriptors, namespaces, and sockets are sampled every 500 ms.".into(),
+            },
+            CollectorCapability {
+                id: "pidfd".into(),
+                label: "Pidfd exit detection".into(),
+                state: "active-when-permitted".into(),
+                detail: "A pidfd is retained for each visible tracked process when the kernel permits it.".into(),
+            },
+            CollectorCapability {
+                id: "kernel-lifecycle".into(),
+                label: "Kernel lifecycle stream".into(),
+                state: "unavailable".into(),
+                detail: "This build does not install an eBPF or proc-connector helper; sub-sample fork and exec events can be missed.".into(),
+            },
+        ],
     }
 }
 
@@ -240,7 +367,8 @@ impl SessionControl {
                 "payload": {
                     "schema": "process-stasis/session-journal-v1",
                     "sessionId": session_id,
-                    "recordingStartedAt": started_at
+                    "recordingStartedAt": started_at,
+                    "target": self.target
                 }
             })
         };
@@ -331,6 +459,11 @@ impl SessionControl {
     }
 
     fn record(&self, message: &TrackingMessage) {
+        if let TrackingMessage::Snapshot(snapshot) = message {
+            if let Ok(mut latest) = self.latest_snapshot.lock() {
+                *latest = Some(snapshot.clone());
+            }
+        }
         if matches!(message, TrackingMessage::Snapshot(snapshot) if snapshot.sequence % RECORD_SNAPSHOT_EVERY != 0)
         {
             return;
@@ -400,6 +533,58 @@ impl SessionControl {
         slot.journal = Some(journal);
     }
 
+    fn record_value(&self, value: &serde_json::Value) -> Result<(), String> {
+        let mut slot = self
+            .recording
+            .lock()
+            .map_err(|_| "recording state is unavailable".to_string())?;
+        let mut journal = slot
+            .journal
+            .take()
+            .ok_or_else(|| "start recording before preserving this evidence".to_string())?;
+        let bytes = json_line(value)?;
+        if slot.info.as_ref().is_some_and(|info| {
+            info.byte_count.saturating_add(bytes.len() as u64) > MAX_RECORDING_BYTES
+        }) {
+            slot.journal = Some(journal);
+            return Err("recording reached the 32 MiB safety limit".into());
+        }
+        let result = journal
+            .file
+            .write_all(&bytes)
+            .and_then(|_| journal.file.flush())
+            .map_err(|error| error.to_string());
+        match result {
+            Ok(()) => {
+                if let Some(info) = slot.info.as_mut() {
+                    info.byte_count = info.byte_count.saturating_add(bytes.len() as u64);
+                }
+                slot.journal = Some(journal);
+                Ok(())
+            }
+            Err(error) => {
+                if let Some(info) = slot.info.as_mut() {
+                    info.active = false;
+                    info.error = Some(error.clone());
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn record_inspection(&self, process: ProcessDetails) -> Result<InspectionCapture, String> {
+        let capture = InspectionCapture {
+            id: Uuid::new_v4().to_string(),
+            timestamp: Utc::now().to_rfc3339(),
+            process,
+        };
+        self.record_value(&serde_json::json!({
+            "type": "inspection",
+            "payload": capture
+        }))?;
+        Ok(capture)
+    }
+
     fn read_recording(&self) -> Result<RecordedCapture, String> {
         let mut slot = self
             .recording
@@ -447,6 +632,8 @@ fn json_line<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, String> {
 fn parse_recording(info: RecordingInfo, content: &str) -> Result<RecordedCapture, String> {
     let mut snapshots = Vec::new();
     let mut lifecycle_events = Vec::new();
+    let mut inspections = Vec::new();
+    let mut control_actions = Vec::new();
     let lines = content.lines().collect::<Vec<_>>();
     for (index, line) in lines.iter().enumerate() {
         let value: serde_json::Value = match serde_json::from_str(line) {
@@ -471,6 +658,24 @@ fn parse_recording(info: RecordingInfo, content: &str) -> Result<RecordedCapture
                     lifecycle_events.push(event);
                 }
             }
+            Some("inspection") => {
+                let capture =
+                    serde_json::from_value(value.get("payload").cloned().ok_or_else(|| {
+                        "inspection journal entry is missing its payload".to_string()
+                    })?)
+                    .map_err(|error| error.to_string())?;
+                inspections.push(capture);
+            }
+            Some("controlAction") => {
+                let action = serde_json::from_value(
+                    value
+                        .get("payload")
+                        .cloned()
+                        .ok_or_else(|| "control action is missing its payload".to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                control_actions.push(action);
+            }
             _ => {}
         }
     }
@@ -478,7 +683,155 @@ fn parse_recording(info: RecordingInfo, content: &str) -> Result<RecordedCapture
         info,
         snapshots,
         lifecycle_events,
+        inspections,
+        control_actions,
     })
+}
+
+fn read_recording_from_disk(root: &Path, session_id: &str) -> Result<RecordedCapture, String> {
+    case_store::ensure_store(root)?;
+    let path = case_store::recording_path(root, session_id)?;
+    let (content, size) = read_recording_text(&path)?;
+    let started_at = journal_started_at(&content)
+        .ok_or_else(|| "recording journal header is missing or invalid".to_string())?;
+    let info = RecordingInfo {
+        session_id: session_id.into(),
+        file_name: format!("{session_id}.jsonl"),
+        started_at,
+        active: false,
+        snapshot_count: 0,
+        event_count: 0,
+        byte_count: size,
+        error: None,
+    };
+    let mut capture = parse_recording(info, &content)?;
+    capture.info.snapshot_count = capture.snapshots.len() as u64;
+    capture.info.event_count = capture.lifecycle_events.len() as u64;
+    Ok(capture)
+}
+
+fn list_recordings(root: &Path) -> Result<Vec<SessionSummary>, String> {
+    case_store::ensure_store(root)?;
+    let mut summaries = Vec::new();
+    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if !file_type.is_file() || file_type.is_symlink() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        let Some(session_id) = file_name.strip_suffix(".jsonl") else {
+            continue;
+        };
+        if case_store::validate_session_id(session_id).is_err() {
+            continue;
+        }
+        let Ok((content, size)) = read_recording_text(&entry.path()) else {
+            continue;
+        };
+        let Some(started_at) = journal_started_at(&content) else {
+            continue;
+        };
+        let info = RecordingInfo {
+            session_id: session_id.into(),
+            file_name: file_name.clone(),
+            started_at: started_at.clone(),
+            active: false,
+            snapshot_count: 0,
+            event_count: 0,
+            byte_count: size,
+            error: None,
+        };
+        let Ok(capture) = parse_recording(info, &content) else {
+            continue;
+        };
+        let target = journal_target(&content).or_else(|| {
+            let first = capture.snapshots.first()?;
+            let node = first
+                .nodes
+                .iter()
+                .find(|node| node.key.id == first.root_key)?;
+            Some(SessionTarget {
+                key: node.key.clone(),
+                comm: node.comm.clone(),
+                command: node.command.clone(),
+            })
+        });
+        let case = case_store::read_metadata(root, session_id)
+            .unwrap_or_else(|_| case_store::default_metadata(session_id));
+        let updated_at = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .map(chrono::DateTime::<Utc>::from)
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| started_at.clone());
+        summaries.push(SessionSummary {
+            session_id: session_id.into(),
+            file_name,
+            started_at,
+            updated_at,
+            byte_count: size,
+            snapshot_count: capture.snapshots.len() as u64,
+            event_count: capture.lifecycle_events.len() as u64,
+            inspection_count: capture.inspections.len(),
+            control_action_count: capture.control_actions.len(),
+            target,
+            title: (!case.title.trim().is_empty()).then_some(case.title),
+            tags: case.tags,
+            integrity_sha256: sha256_hex(content.as_bytes()),
+            partial_tail_ignored: !content.is_empty() && !content.ends_with('\n'),
+        });
+    }
+    summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    summaries.truncate(500);
+    Ok(summaries)
+}
+
+fn read_recording_text(path: &Path) -> Result<(String, u64), String> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if metadata.len() > MAX_RECORDING_BYTES {
+        return Err("recording exceeds the 32 MiB read limit".into());
+    }
+    let mut content = String::with_capacity(metadata.len() as usize);
+    file.read_to_string(&mut content)
+        .map_err(|error| error.to_string())?;
+    Ok((content, metadata.len()))
+}
+
+fn journal_started_at(content: &str) -> Option<String> {
+    let header: serde_json::Value = serde_json::from_str(content.lines().next()?).ok()?;
+    (header.get("type")?.as_str()? == "journalHeader")
+        .then(|| {
+            header
+                .get("payload")?
+                .get("recordingStartedAt")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .flatten()
+}
+
+fn journal_target(content: &str) -> Option<SessionTarget> {
+    let header: serde_json::Value = serde_json::from_str(content.lines().next()?).ok()?;
+    serde_json::from_value(header.get("payload")?.get("target")?.clone()).ok()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    hex::encode(digest.finalize())
 }
 
 async fn run_session(
@@ -937,6 +1290,22 @@ fn event_for(
         pid,
         comm: comm.into(),
         message,
+        source: if matches!(kind, "attached" | "detached") {
+            "observer"
+        } else if kind == "exit" {
+            "procfs+pidfd"
+        } else {
+            "procfs-diff"
+        }
+        .into(),
+        confidence: if matches!(kind, "attached" | "detached") {
+            "exact"
+        } else if kind == "exit" {
+            "observed"
+        } else {
+            "inferred"
+        }
+        .into(),
     }
 }
 
@@ -1072,6 +1441,16 @@ mod tests {
         let control = SessionControl {
             cancelled: AtomicBool::new(false),
             recording: Mutex::new(RecordingSlot::default()),
+            latest_snapshot: Mutex::new(None),
+            target: SessionTarget {
+                key: ProcessKey {
+                    id: "boot:20:200".into(),
+                    pid: 20,
+                    start_time_ticks: 200,
+                },
+                comm: "p20".into(),
+                command: "p20".into(),
+            },
         };
         let session_id = Uuid::new_v4().to_string();
         control
@@ -1110,6 +1489,21 @@ mod tests {
             "p20",
             "p20 changed image".into(),
         )));
+        control
+            .record_value(&serde_json::json!({
+                "type": "controlAction",
+                "payload": ControlAction {
+                    id: Uuid::new_v4().to_string(),
+                    timestamp: Utc::now().to_rfc3339(),
+                    action: "freeze".into(),
+                    outcome: "verified".into(),
+                    reason: "synthetic test authorization".into(),
+                    cgroup_path: Some("/synthetic.scope".into()),
+                    affected_processes: vec![ProcessKey { id: "boot:20:200".into(), pid: 20, start_time_ticks: 200 }],
+                    verification: "synthetic verification".into(),
+                }
+            }))
+            .expect("control action records");
         let stopped = control.stop_recording().expect("recording stops");
         let capture = control.read_recording().expect("recording reads");
         let file_path = root.join(&stopped.file_name);
@@ -1118,6 +1512,12 @@ mod tests {
         assert_eq!(stopped.event_count, 2);
         assert_eq!(capture.snapshots.len(), 1);
         assert_eq!(capture.lifecycle_events.len(), 2);
+        assert_eq!(capture.control_actions.len(), 1);
+        let summaries = list_recordings(&root).expect("recording is discoverable");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].target.as_ref().unwrap().comm, "p20");
+        let reopened = read_recording_from_disk(&root, &session_id).expect("recording reopens");
+        assert_eq!(reopened.control_actions.len(), 1);
         assert_eq!(
             fs::metadata(&root).unwrap().permissions().mode() & 0o777,
             0o700
@@ -1141,6 +1541,16 @@ mod tests {
         let control = SessionControl {
             cancelled: AtomicBool::new(false),
             recording: Mutex::new(RecordingSlot::default()),
+            latest_snapshot: Mutex::new(None),
+            target: SessionTarget {
+                key: ProcessKey {
+                    id: "boot:20:200".into(),
+                    pid: 20,
+                    start_time_ticks: 200,
+                },
+                comm: "p20".into(),
+                command: "p20".into(),
+            },
         };
 
         let error = control

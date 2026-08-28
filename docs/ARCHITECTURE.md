@@ -11,8 +11,10 @@ Process Stasis is three related workflows, not one transparent migration trick:
 3. **Replay** builds a declared reconstruction and starts it inside a disposable
    analysis VM. Replay is not represented as continuation of the original process.
 
-Only Inspect is part of the first implementation. Stasis and Replay remain disabled
-until their safety gates and test environments exist.
+Inspect and the evidence/case workflow are implemented. A narrow Stasis control
+is also implemented for a process family that is already in one exclusive,
+writable cgroup v2 subtree; it never performs arbitrary live-tree migration.
+Replay remains disabled until its VM and network safety gates exist.
 
 ## End-to-end data flow
 
@@ -37,7 +39,9 @@ flowchart LR
     E --> A
 ```
 
-Solid arrows are the Phase 1 path. Dashed arrows are later phases.
+The inspect/evidence path is implemented. The controller arrow is implemented
+only for verified freeze/thaw of an existing exclusive cgroup; VM/replay arrows
+remain later phases.
 
 ## Trust boundaries
 
@@ -117,10 +121,11 @@ stateDiagram-v2
     AwaitingDisposition --> LeftFrozen: handoff to incident response
 ```
 
-The dependable initial version will launch benign targets inside a dedicated cgroup
-from birth. Attaching an arbitrary discovered process tree is a later best-effort
-mode because enumeration, fork, exit, and cgroup movement cannot be treated as one
-atomic operation. Its report must state that gap.
+The current controller does not attach or move an arbitrary tree. It permits
+freeze/thaw only when recursive cgroup membership already equals the identity-
+pinned living tracked scope, refuses the root group, records the operator request,
+and verifies `cgroup.events`. A future controlled launcher remains the dependable
+way to establish that boundary from process birth.
 
 ## Replay workflow and network boundary
 

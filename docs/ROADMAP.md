@@ -117,3 +117,19 @@ checkpointed state to a fresh execution while calling it equivalent.
    separate publishable report, and document collection side effects.
 6. **P2.1 — Controlled launcher:** only after Phase 1 passes, launch a benign target
    into a delegated cgroup and verify its membership from birth.
+
+## Desktop product milestones
+
+- **0.3 — identity and recording (complete):** pidfd/start-time identity, scoped
+  descendants, retained exits, and crash-tolerant owner-only JSONL recording.
+- **0.4 — investigation workspace (complete in 0.7):** reopen journals, searchable
+  timeline, provenance filters, bookmarks/notes, and snapshot comparison.
+- **0.5 — event-source contract (partial):** lifecycle provenance and capability
+  reporting are implemented; a kernel fork/exec source is not installed and the
+  UI/export say so explicitly.
+- **0.6 — evidence workflow (complete in 0.7):** persistent case metadata, journal
+  integrity hash, inspection/control inventory, redacted JSON, and escaped HTML.
+- **0.7 — containment gate (complete for existing exclusive cgroups):** verified
+  cgroup v2 freeze/thaw with exact recursive membership, authorization reason,
+  active recording, and request/result audit trail. Controlled launch and network
+  restriction remain separate safety milestones.

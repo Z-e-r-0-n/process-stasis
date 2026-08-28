@@ -18,6 +18,12 @@ export interface ProcessListItem {
   ageSeconds: number;
 }
 
+export interface SessionTarget {
+  key: ProcessKey;
+  comm: string;
+  command: string;
+}
+
 export interface ProcessNode extends ProcessListItem {
   parentKey?: string;
   alive: boolean;
@@ -64,6 +70,8 @@ export interface LifecycleEvent {
   pid: number;
   comm: string;
   message: string;
+  source?: string;
+  confidence?: string;
 }
 
 export type TrackingMessage =
@@ -85,6 +93,8 @@ export interface RecordedCapture {
   info: RecordingInfo;
   snapshots: GraphSnapshot[];
   lifecycleEvents: LifecycleEvent[];
+  inspections: InspectionCapture[];
+  controlActions: ControlAction[];
 }
 
 export interface FileDescriptor {
@@ -112,6 +122,16 @@ export interface ProcessDetails {
   commandLine: string[];
   executable?: string;
   executableSha256?: string;
+  executableMetadata?: {
+    sizeBytes: number;
+    modifiedAt?: string;
+    device: number;
+    inode: number;
+    mode: number;
+    uid: number;
+    gid: number;
+    deleted: boolean;
+  };
   cwd?: string;
   root?: string;
   environment: string[];
@@ -120,10 +140,103 @@ export interface ProcessDetails {
   limits: string;
   maps: string;
   io: Record<string, number>;
-  namespaces: { name: string; identifier: string }[];
+  namespaces: { name: string; identifier: string; differsFromObserver: boolean }[];
   fileDescriptors: FileDescriptor[];
   sockets: SocketEntry[];
   collectionErrors: string[];
+}
+
+export interface InspectionCapture {
+  id: string;
+  timestamp: string;
+  process: ProcessDetails;
+}
+
+export interface ControlAction {
+  id: string;
+  timestamp: string;
+  action: string;
+  outcome: string;
+  reason: string;
+  cgroupPath?: string;
+  affectedProcesses: ProcessKey[];
+  verification: string;
+}
+
+export interface CaseAnnotation {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  kind: "note" | "bookmark";
+  body: string;
+  eventId?: string;
+  processKey?: string;
+  snapshotSequence?: number;
+}
+
+export interface CaseMetadata {
+  schema: string;
+  sessionId: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  annotations: CaseAnnotation[];
+  updatedAt: string;
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  fileName: string;
+  startedAt: string;
+  updatedAt: string;
+  byteCount: number;
+  snapshotCount: number;
+  eventCount: number;
+  inspectionCount: number;
+  controlActionCount: number;
+  target?: SessionTarget;
+  title?: string;
+  tags: string[];
+  integritySha256: string;
+  partialTailIgnored: boolean;
+}
+
+export interface CollectorCapability {
+  id: string;
+  label: string;
+  state: string;
+  detail: string;
+}
+
+export interface CollectorProfile {
+  activeSource: string;
+  lifecyclePrecision: string;
+  sampleIntervalMs: number;
+  capabilities: CollectorCapability[];
+}
+
+export interface CapabilityGate {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface ContainmentStatus {
+  supported: boolean;
+  available: boolean;
+  frozen: boolean;
+  cgroupPath?: string;
+  reason: string;
+  gates: CapabilityGate[];
+  members: ProcessKey[];
+  networkRestrictionAvailable: boolean;
+  networkReason: string;
+}
+
+export interface ContainmentOutcome {
+  status: ContainmentStatus;
+  action: ControlAction;
 }
 
 export interface SystemOverview {

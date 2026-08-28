@@ -23,6 +23,12 @@ experiment, but the replacement must record why.
 | D016 | Default replay networking to local simulation with no egress | Compatibility failure must not expose the Internet or real services. |
 | D017 | Keep the first interface as a CLI | It makes actions, logs, tests, and privilege transitions easier to audit than an early web UI. |
 | D018 | Never produce an automatic malicious/benign verdict | The product exposes evidence, gaps, behavior, and hypotheses for an investigator. |
+| D019 | Keep original observations append-only and case annotations in a sidecar | Notes and bookmarks must not rewrite captured evidence. |
+| D020 | Label lifecycle provenance and confidence in both UI and export | Procfs diffs must not be mistaken for kernel audit events. |
+| D021 | Reopen only bounded owner-only journals with canonical UUID names | Persistent cases should survive restart without accepting arbitrary paths or symlinks. |
+| D022 | Permit freeze/thaw only for an already-exclusive cgroup subtree | Exact recursive membership avoids freezing unrelated processes and does not pretend live migration is atomic. |
+| D023 | Require active evidence recording before a containment action | Every state change needs a request and verified result in the native journal. |
+| D024 | Keep network restriction visibly unavailable until a separate helper exists | Elevating the full WebView or implying container isolation would violate the trust boundary. |
 
 ## Deferred choices
 

@@ -1,4 +1,4 @@
-import { ArrowsClockwise, Copy, Eye, EyeSlash, Files, Globe, HardDrives, Info, Memory, Warning } from "@phosphor-icons/react";
+import { ArrowsClockwise, CheckCircle, Copy, Eye, EyeSlash, Files, Globe, HardDrives, Info, Memory, Warning, WarningCircle } from "@phosphor-icons/react";
 import { animate } from "animejs";
 import { useEffect, useState } from "react";
 import { formatBytes, formatDuration, processStateLabel, truncateMiddle } from "../format";
@@ -56,6 +56,7 @@ export function Inspector({ process, details, loading, error, onRefresh }: Props
 
 function Overview({ process, details }: { process: ProcessNode; details?: ProcessDetails }) {
   return <>
+    <Observations process={process} details={details} />
     <Section title="Live metrics"><div className="metric-grid">
       <Metric label="CPU" value={`${process.cpuPercent.toFixed(1)}%`} accent /> <Metric label="Resident" value={formatBytes(process.rssBytes)} />
       <Metric label="Virtual" value={formatBytes(process.virtualBytes)} /> <Metric label="Threads" value={String(process.threads)} />
@@ -63,11 +64,32 @@ function Overview({ process, details }: { process: ProcessNode; details?: Proces
     </div></Section>
     <Section title="Identity"><KeyValues values={[
       ["Executable", details?.executable ?? process.executable ?? "unavailable"], ["SHA-256", details?.executableSha256 ?? "collecting…"],
-      ["Identity guard", process.identityGuard], ["Working dir", details?.cwd ?? "unavailable"], ["Parent PID", String(process.ppid)], ["Start ticks", String(process.key.startTimeTicks)],
+      ["Image size", details?.executableMetadata ? formatBytes(details.executableMetadata.sizeBytes) : "unavailable"],
+      ["Device / inode", details?.executableMetadata ? `${details.executableMetadata.device} / ${details.executableMetadata.inode}` : "unavailable"],
+      ["Mode / owner", details?.executableMetadata ? `${details.executableMetadata.mode.toString(8)} · ${details.executableMetadata.uid}:${details.executableMetadata.gid}` : "unavailable"],
+      ["Modified", details?.executableMetadata?.modifiedAt ?? "unavailable"], ["Identity guard", process.identityGuard],
+      ["Working dir", details?.cwd ?? "unavailable"], ["Parent PID", String(process.ppid)], ["Start ticks", String(process.key.startTimeTicks)],
     ]} /></Section>
-    <Section title="Namespaces"><div className="namespace-grid">{details?.namespaces.map((entry) => <div key={entry.name}><span>{entry.name}</span><code>{entry.identifier.match(/\d+/)?.[0] ?? entry.identifier}</code></div>) ?? <SkeletonRows />}</div></Section>
+    <Section title="Namespaces"><div className="namespace-grid">{details?.namespaces.map((entry) => <div key={entry.name} className={entry.differsFromObserver ? "namespace-different" : ""}><span>{entry.name}{entry.differsFromObserver && <i title="Different from observer namespace" />}</span><code>{entry.identifier.match(/\d+/)?.[0] ?? entry.identifier}</code></div>) ?? <SkeletonRows />}</div></Section>
     <Section title="Security context"><KeyValues values={[["Seccomp", details?.status.Seccomp ?? "—"], ["Capabilities", details?.status.CapEff ?? "—"], ["No new privileges", details?.status.NoNewPrivs ?? "—"], ["Cgroup", details?.cgroup.trim() || "—"]]} /></Section>
   </>;
+}
+
+function Observations({ process, details }: { process: ProcessNode; details?: ProcessDetails }) {
+  const findings: { label: string; detail: string; tone: "notice" | "warning" }[] = [];
+  const executable = details?.executable ?? process.executable ?? "";
+  if (executable.endsWith(" (deleted)")) findings.push({ label: "Deleted executable", detail: "The running image no longer has its original directory entry.", tone: "warning" });
+  if (/\/(tmp|dev\/shm|var\/tmp)\//.test(executable)) findings.push({ label: "Transient executable path", detail: executable, tone: "notice" });
+  if (process.uid === 0) findings.push({ label: "Elevated identity", detail: "The process reports effective user ID 0.", tone: "notice" });
+  if (details?.status.NoNewPrivs === "0") findings.push({ label: "Privilege growth not blocked", detail: "NoNewPrivs is not enabled for this process.", tone: "notice" });
+  if (details?.status.Seccomp === "0") findings.push({ label: "No seccomp filter", detail: "The process reports no seccomp mode.", tone: "notice" });
+  const external = details?.sockets.filter((socket) => !/^(127\.|\[?::1\]?|0\.0\.0\.0|\*|—)/.test(socket.remoteAddress)) ?? [];
+  if (external.length) findings.push({ label: "Non-loopback sockets", detail: `${external.length} process-owned socket${external.length === 1 ? "" : "s"} report a non-loopback peer.`, tone: "notice" });
+  if (process.fdCount > 256) findings.push({ label: "Large descriptor set", detail: `${process.fdCount} descriptors were visible in the bounded scan.`, tone: "notice" });
+  return <Section title="Behavioral observations"><p className="observation-disclaimer">Deterministic triage hints from collected facts—not a malware verdict.</p><div className="observation-list">
+    {findings.map((finding) => <div className={finding.tone} key={finding.label}>{finding.tone === "warning" ? <WarningCircle weight="fill" /> : <Info weight="fill" />}<span><b>{finding.label}</b><small title={finding.detail}>{finding.detail}</small></span></div>)}
+    {!findings.length && <div className="quiet"><CheckCircle weight="fill" /><span><b>No highlighted heuristics</b><small>The current bounded capture did not trigger the built-in observations.</small></span></div>}
+  </div></Section>;
 }
 
 function FilesTab({ details }: { details?: ProcessDetails }) {

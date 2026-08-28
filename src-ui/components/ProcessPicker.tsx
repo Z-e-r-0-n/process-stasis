@@ -1,15 +1,18 @@
-import { ArrowRight, MagnifyingGlass, ShieldChevron, TerminalWindow } from "@phosphor-icons/react";
+import { Archive, ArrowRight, CircleNotch, MagnifyingGlass, ShieldChevron, TerminalWindow } from "@phosphor-icons/react";
 import { animate, stagger } from "animejs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listProcesses, systemOverview } from "../api";
 import { formatBytes, formatDuration, processStateLabel } from "../format";
-import type { ProcessListItem, SystemOverview } from "../types";
+import type { ProcessListItem, SessionSummary, SystemOverview } from "../types";
 
 interface Props {
   onSelect: (process: ProcessListItem) => void;
+  sessions: SessionSummary[];
+  openingSession?: string;
+  onOpenSession: (session: SessionSummary) => void;
 }
 
-export function ProcessPicker({ onSelect }: Props) {
+export function ProcessPicker({ onSelect, sessions, openingSession, onOpenSession }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -60,7 +63,7 @@ export function ProcessPicker({ onSelect }: Props) {
     <div className="picker-screen" ref={root}>
       <header className="picker-header reveal">
         <div className="wordmark"><span className="brand-glyph"><ShieldChevron weight="fill" /></span><span>Process Stasis<small>Linux process observer</small></span></div>
-        <span className="version-badge">0.2</span>
+        <span className="version-badge">0.7</span>
       </header>
 
       <main className="picker-content">
@@ -73,6 +76,14 @@ export function ProcessPicker({ onSelect }: Props) {
             <div><span>System load</span><strong>{overview?.loadOne.toFixed(2) ?? "—"}</strong><small>one minute</small></div>
             <div><span>Available memory</span><strong>{overview ? formatBytes(overview.memoryAvailableBytes) : "—"}</strong><small>of {overview ? formatBytes(overview.memoryTotalBytes) : "—"}</small></div>
           </div>
+          <section className="recent-sessions">
+            <header><div><Archive /><span>Recorded investigations</span></div><small>{sessions.length} local</small></header>
+            <div>{sessions.slice(0, 4).map((session) => <button key={session.sessionId} onClick={() => onOpenSession(session)} disabled={Boolean(openingSession)}>
+              <span><strong>{session.title || session.target?.comm || "Untitled session"}</strong><small>{new Date(session.updatedAt).toLocaleString()} · {session.eventCount} events</small></span>
+              {openingSession === session.sessionId ? <CircleNotch className="spinning" /> : <ArrowRight />}
+            </button>)}
+            {!sessions.length && <p>Recorded sessions will remain reopenable here after the app restarts.</p>}</div>
+          </section>
         </section>
 
         <section className="process-selector reveal">

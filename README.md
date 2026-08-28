@@ -5,8 +5,10 @@ it a PID and it builds a temporal family graph, streams resource telemetry,
 retains processes after exit, follows known surviving children, exposes deep
 procfs evidence, and exports a structured investigation session.
 
-Version `0.3.0` is read-only. It sends no signal and performs no containment,
-injection, termination, or replay.
+Version `0.7.0` combines live observation, reopenable evidence sessions, and one
+strictly gated control: verified cgroup v2 freeze/thaw. It does not move an
+arbitrary process tree into a cgroup, restrict networking, inject, terminate,
+emulate, or replay a target.
 
 ## Implemented desktop workflow
 
@@ -15,12 +17,18 @@ injection, termination, or replay.
    PID, and start-time ticks.
 3. Display visible ancestors as context and recursively track only the selected
    process and its descendants.
-4. Sample the known family every 500 ms and infer spawn, exec, and exit events.
+4. Sample the known family every 500 ms, use pidfds for exit identity where
+   permitted, and label inferred spawn/exec lifecycle events by source and confidence.
 5. Preserve exited nodes and follow known live descendants after focus-process exit.
-6. Inspect status, identity, executable hash, namespaces, descriptors, sockets,
-   memory maps, I/O, cgroups, limits, and masked environment values.
-7. Record into an owner-only native journal and export a private JSON
-   investigation session.
+6. Inspect status, executable hash and filesystem metadata, observer-relative
+   namespace differences, descriptors, sockets, maps, I/O, cgroups, limits,
+   security context, and masked environment values.
+7. Record into an owner-only native journal; preserve deep inspections and
+   control actions; reopen sessions after restart.
+8. Search/filter the timeline, bookmark evidence, write case notes and tags,
+   compare graph snapshots, and export redacted JSON or a readable HTML report.
+9. Offer freeze/thaw only when every live tracked member occupies one writable,
+   exclusive, non-root cgroup and `cgroup.events` verifies the requested state.
 
 The exact collection fields, workflow, export shape, and limitations are in
 [`docs/DESKTOP-WORKFLOW.md`](docs/DESKTOP-WORKFLOW.md). The older `0.1` Python
@@ -89,11 +97,12 @@ deleted-open test file. Stop it with `Ctrl+C` after testing.
 
 ## Architecture boundary
 
-The desktop uses React, React Flow, Anime.js, uPlot, and a Rust Tauri
-backend that reads procfs. Polling is explicitly labeled because short-lived
-processes can be missed. Kernel event tracing, containment, and VM-based replay
-remain future phases; containers or syscall interception will not be presented
-as the sole boundary for hostile code.
+The desktop uses React, React Flow, Anime.js, uPlot, and a Rust Tauri backend.
+Procfs polling remains explicit because short-lived processes can be missed; this
+build does not install an eBPF or process-connector helper. Freeze/thaw writes
+only to a pre-existing verified cgroup and never claims that a container alone is
+a hostile-code boundary. Network isolation, syscall mediation, VM replay, and
+checkpoint/restore remain separate future components.
 
 ## Packages and compatibility
 
