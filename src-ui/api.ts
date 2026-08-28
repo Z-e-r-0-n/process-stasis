@@ -24,6 +24,11 @@ const mockRecordings = new Map<string, RecordingInfo>();
 const mockCaptures = new Map<string, RecordedCapture>();
 const mockCases = new Map<string, CaseMetadata>();
 const mockContainment = new Map<string, ContainmentStatus>();
+const mockTrackingSessions = new Map<string, {
+  focusKey: string;
+  latest?: GraphSnapshot;
+  deliver: (message: TrackingMessage) => void;
+}>();
 
 export async function listProcesses(query = "", limit = 250): Promise<ProcessListItem[]> {
   if (isTauri()) return invoke("list_processes", { query, limit });
@@ -72,6 +77,33 @@ export async function startTracking(
     };
   }
   return startMockTracking(pid, onMessage);
+}
+
+export async function promoteTrackingFocus(sessionId: string, processKey: string): Promise<GraphSnapshot> {
+  if (isTauri()) return invoke("promote_tracking_focus", { sessionId, processKey });
+  const session = mockTrackingSessions.get(sessionId);
+  const snapshot = session?.latest;
+  if (!session || !snapshot) throw new Error("tracking has not produced a snapshot yet");
+  if (snapshot.rootAlive) throw new Error("focus can be transferred after the current focus exits");
+  const candidate = snapshot.nodes.find((node) => node.key.id === processKey);
+  if (!candidate?.alive) throw new Error("the selected survivor is no longer running");
+  if (!isSnapshotDescendant(snapshot, processKey, snapshot.rootKey)) {
+    throw new Error("the selected process is not a descendant of the current focus");
+  }
+  const previous = snapshot.nodes.find((node) => node.key.id === snapshot.rootKey)!;
+  session.focusKey = processKey;
+  const promoted = applyMockSnapshotFocus(snapshot, processKey);
+  session.latest = promoted;
+  session.deliver({
+    type: "event",
+    payload: {
+      id: crypto.randomUUID(), timestamp: new Date().toISOString(), kind: "focus-changed", severity: "info",
+      processKey: candidate.key.id, pid: candidate.key.pid, comm: candidate.comm,
+      message: `Focus moved from ${previous.comm} (PID ${previous.key.pid}) to ${candidate.comm} (PID ${candidate.key.pid})`,
+      source: "observer", confidence: "exact",
+    },
+  });
+  return promoted;
 }
 
 export async function chooseExportPath(defaultName: string, extension = "json"): Promise<string | null> {
@@ -261,6 +293,8 @@ function startMockTracking(
     };
     mockRecordings.set(sessionId, capture.info);
   };
+  const tracking = { focusKey: root.key.id, latest: undefined as GraphSnapshot | undefined, deliver };
+  mockTrackingSessions.set(sessionId, tracking);
   deliver({ type: "event", payload: event("attached", `Attached to ${root.comm} (${root.key.pid})`) });
   const timer = window.setInterval(() => {
     sequence += 1;
@@ -269,12 +303,12 @@ function startMockTracking(
     const nodes: ProcessNode[] = visible.map((item, index) => ({
       ...item,
       parentKey: index === 0 ? items[1].key.id : index === 1 ? items[4].key.id : root.key.id,
-      alive: !(sequence > 34 && index === 2),
-      isFocus: item.key.id === root.key.id,
+      alive: !(sequence > 12 && index === 0) && !(sequence > 18 && index === 2),
+      isFocus: item.key.id === tracking.focusKey,
       isAncestor: index === 1,
       identityGuard: "pidfd+start-time",
       discoveredAt: new Date(started + index * 3500).toISOString(),
-      exitedAt: sequence > 34 && index === 2 ? new Date().toISOString() : undefined,
+      exitedAt: (sequence > 12 && index === 0) || (sequence > 18 && index === 2) ? new Date().toISOString() : undefined,
       cpuPercent: Math.max(0, 13 + Math.sin(elapsed * 1.6 + index) * 11 - index * 2),
       virtualBytes: item.rssBytes * 3.8,
       readBytes: elapsed * (index + 1) * 480_000,
@@ -282,9 +316,10 @@ function startMockTracking(
       fdCount: 9 + index * 7,
     }));
     if (sequence === 8) deliver({ type: "event", payload: event("spawn", "worker-net spawned PID 19748", items[3]) });
-    if (sequence === 35) deliver({ type: "event", payload: event("exit", "worker-io (PID 19731) exited", items[2]) });
-    const snapshot: GraphSnapshot = {
-      sessionId, sequence, timestamp: new Date().toISOString(), rootKey: root.key.id, rootAlive: true,
+    if (sequence === 13) deliver({ type: "event", payload: event("exit", `${root.comm} (PID ${root.key.pid}) exited`, root) });
+    if (sequence === 19) deliver({ type: "event", payload: event("exit", "worker-io (PID 19731) exited", items[2]) });
+    let snapshot: GraphSnapshot = {
+      sessionId, sequence, timestamp: new Date().toISOString(), rootKey: tracking.focusKey, rootAlive: true,
       aliveCount: nodes.filter((node) => node.alive).length, exitedCount: nodes.filter((node) => !node.alive).length,
       nodes,
       edges: nodes.filter((node) => node.parentKey).map((node) => ({
@@ -293,9 +328,44 @@ function startMockTracking(
       })),
       missedEventWarning: true,
     };
+    snapshot = applyMockSnapshotFocus(snapshot, tracking.focusKey);
+    tracking.latest = snapshot;
     deliver({ type: "snapshot", payload: snapshot });
   }, 500);
-  return { sessionId, stop: async () => window.clearInterval(timer) };
+  return { sessionId, stop: async () => { window.clearInterval(timer); mockTrackingSessions.delete(sessionId); } };
+}
+
+function isSnapshotDescendant(snapshot: GraphSnapshot, candidateKey: string, rootKey: string): boolean {
+  const parents = new Map(snapshot.edges.map((edge) => [edge.target, edge.source]));
+  const seen = new Set<string>();
+  let cursor: string | undefined = candidateKey;
+  while ((cursor = parents.get(cursor))) {
+    if (cursor === rootKey) return true;
+    if (seen.has(cursor)) return false;
+    seen.add(cursor);
+  }
+  return false;
+}
+
+function applyMockSnapshotFocus(snapshot: GraphSnapshot, focusKey: string): GraphSnapshot {
+  const parents = new Map(snapshot.edges.map((edge) => [edge.target, edge.source]));
+  const ancestors = new Set<string>();
+  let cursor = parents.get(focusKey);
+  while (cursor && !ancestors.has(cursor)) {
+    ancestors.add(cursor);
+    cursor = parents.get(cursor);
+  }
+  const nodes = snapshot.nodes.map((node) => ({
+    ...node,
+    isFocus: node.key.id === focusKey,
+    isAncestor: ancestors.has(node.key.id),
+  }));
+  return {
+    ...snapshot,
+    rootKey: focusKey,
+    rootAlive: nodes.find((node) => node.key.id === focusKey)?.alive ?? false,
+    nodes,
+  };
 }
 
 function mockDetails(item: ProcessListItem): ProcessDetails {

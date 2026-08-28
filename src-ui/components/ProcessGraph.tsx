@@ -26,12 +26,15 @@ interface Props {
   scope: GraphScope;
   depth: GraphDepth;
   showExited: boolean;
+  canPromote: boolean;
+  promotingFocus: boolean;
   onPausedChange: (paused: boolean) => void;
   onScopeChange: (scope: GraphScope) => void;
   onDepthChange: (depth: GraphDepth) => void;
   onShowExitedChange: (visible: boolean) => void;
   onSelect: (key: string) => void;
   onInspect: (key: string) => void;
+  onPromote: (key: string) => void;
 }
 
 const ProcessCard = memo(({ data }: NodeProps<ProcessFlowNode>) => {
@@ -54,7 +57,7 @@ const nodeTypes = { process: ProcessCard };
 const edgeTypes = { historical: HistoricalEdge };
 
 function GraphStage(props: Props) {
-  const { snapshot, selectedKey, paused, scope, depth, showExited, onPausedChange, onScopeChange, onDepthChange, onShowExitedChange, onSelect, onInspect } = props;
+  const { snapshot, selectedKey, paused, scope, depth, showExited, canPromote, promotingFocus, onPausedChange, onScopeChange, onDepthChange, onShowExitedChange, onSelect, onInspect, onPromote } = props;
   const flow = useReactFlow<ProcessFlowNode>();
   const positions = useRef(new Map<string, Point>());
   const seen = useRef(new Set<string>());
@@ -104,7 +107,7 @@ function GraphStage(props: Props) {
           {nodes.length > 8 && <MiniMap pannable zoomable className="graph-minimap" nodeColor={(node) => { const process = (node.data as ProcessFlowNode["data"]).process; return !process.alive ? "#b5ada2" : process.isFocus ? "#3158d8" : "#de765d"; }} maskColor="rgba(247,243,235,.72)" />}
         </ReactFlow>}
     </div>
-    {snapshot && <footer className="graph-footer"><div><span><i className="live" /> Live {filtered?.aliveCount ?? 0}</span><span><i className="history" /> Exited {filtered?.exitedCount ?? 0}</span><span>{nodes.length} shown of {snapshot.nodes.length}</span></div>{selected && <button onClick={() => onInspect(selected.key.id)}><span><strong>{selected.comm}</strong><small>PID {selected.key.pid} · {selected.alive ? "live" : "retained"}</small></span>Inspect process <ArrowRight /></button>}</footer>}
+    {snapshot && <footer className="graph-footer"><div className="graph-counts"><span><i className="live" /> Live {filtered?.aliveCount ?? 0}</span><span><i className="history" /> Exited {filtered?.exitedCount ?? 0}</span><span>{nodes.length} shown of {snapshot.nodes.length}</span></div>{selected && <div className="graph-selection-actions"><button className="inspect-selection" onClick={() => onInspect(selected.key.id)}><span><strong>{selected.comm}</strong><small>PID {selected.key.pid} · {selected.alive ? "live" : "retained"}</small></span>Inspect <ArrowRight /></button>{canPromote && <button className="promote-selection" disabled={promotingFocus} onClick={() => onPromote(selected.key.id)}><Crosshair />{promotingFocus ? "Moving…" : "Make focus"}</button>}</div>}</footer>}
   </section>;
 }
 

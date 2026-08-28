@@ -1,6 +1,6 @@
 # Desktop workflow and evidence contract
 
-This document describes the implemented Process Stasis `0.8.0` desktop
+This document describes the implemented Process Stasis `0.8.1` desktop
 application. The Python `0.1` point-in-time collector remains documented in
 [`CURRENT-WORKFLOW.md`](CURRENT-WORKFLOW.md).
 
@@ -48,6 +48,9 @@ choose PID
    child discovery so a parent and grandchild found in one sample are both added.
 7. Exited nodes and edges remain in the graph. If the focus exits, collection
    continues for already known living descendants.
+8. A selected living descendant can be promoted in place. The session ID,
+   journal, retained graph, timeline, annotations, and metrics remain intact;
+   subsequent discovery and containment are rooted at the promoted identity.
 
 The graph is an observed temporal reconstruction, not an audit log. A process
 that forks, execs, and exits entirely between 500 ms samples can be missed.
@@ -57,6 +60,7 @@ that forks, execs, and exits entirely between 500 ms samples can be missed.
 | Event | Source label | Confidence |
 |---|---|---|
 | Attach/detach | `observer` | exact application action |
+| Focus transfer | `observer` | exact application action |
 | Spawn | `procfs-diff` | inferred from a newly visible stable child identity |
 | Exec | `procfs-diff` | inferred from a changed task name or executable link |
 | Exit | `procfs+pidfd` | observed missing identity, with retained pidfd polling when available |
@@ -85,7 +89,9 @@ UI retains up to 1,800 metric points per selected identity and 1,800 two-second
 comparison snapshots. Node coordinates and the operator's viewport persist
 across samples. New nodes receive one entry transition; existing nodes are not
 remounted or automatically refitted. Double-clicking a node folds or unfolds its
-descendant branch.
+descendant branch. After focus transfer, the old focus becomes retained ancestry,
+the selected survivor becomes the graph root, and sibling branches remain in the
+session as evidence but no longer expand the active observation scope.
 
 ## Deep inspection
 
@@ -157,14 +163,15 @@ in-session comparison, not a byte-for-byte memory diff.
 
 ## Export contract
 
-JSON exports use `process-stasis/session-v0.8` and contain:
+JSON exports use `process-stasis/session-v0.8.1` and contain:
 
 ```text
 schema, exportedAt
 case { title, summary, tags, annotations[] }
 redaction { environmentValuesIncluded }
 collector { activeSource, lifecyclePrecision, sampleIntervalMs, capabilities[] }
-target { pid, startTimeTicks, command }
+initialTarget { pid, startTimeTicks, command }
+target { pid, startTimeTicks, command }  # current focus at export time
 session { id, journal }
 latestSnapshot
 snapshots[]

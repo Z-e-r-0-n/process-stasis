@@ -40,6 +40,8 @@ struct SessionControl {
     cancelled: AtomicBool,
     recording: Mutex<RecordingSlot>,
     latest_snapshot: Mutex<Option<GraphSnapshot>>,
+    focus_key: Mutex<String>,
+    output: Option<Channel<TrackingMessage>>,
     target: SessionTarget,
 }
 
@@ -97,6 +99,8 @@ impl TrackerState {
             cancelled: AtomicBool::new(false),
             recording: Mutex::new(RecordingSlot::default()),
             latest_snapshot: Mutex::new(None),
+            focus_key: Mutex::new(root_key.clone()),
+            output: Some(output),
             target,
         });
 
@@ -115,7 +119,6 @@ impl TrackerState {
                 boot,
                 initial_scan,
                 control.clone(),
-                output,
             )
             .await;
             control.finish_recording();
@@ -199,6 +202,82 @@ impl TrackerState {
             .map_err(|_| "tracking snapshot is unavailable".to_string())?
             .clone()
             .ok_or_else(|| "tracking has not produced a snapshot yet".into())
+    }
+
+    pub fn promote_focus(
+        &self,
+        session_id: &str,
+        process_key: &str,
+    ) -> Result<GraphSnapshot, String> {
+        let control = self
+            .sessions
+            .lock()
+            .map_err(|_| "tracker state is unavailable".to_string())?
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| "tracking session is not active".to_string())?;
+
+        let mut focus_key = control
+            .focus_key
+            .lock()
+            .map_err(|_| "tracking focus is unavailable".to_string())?;
+        let mut latest = control
+            .latest_snapshot
+            .lock()
+            .map_err(|_| "tracking snapshot is unavailable".to_string())?;
+        let snapshot = latest
+            .as_mut()
+            .ok_or_else(|| "tracking has not produced a snapshot yet".to_string())?;
+        if snapshot.root_key != *focus_key {
+            return Err("tracking focus and latest snapshot are out of sync".into());
+        }
+        if process_key == focus_key.as_str() {
+            return Ok(snapshot.clone());
+        }
+
+        let previous = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.key.id == *focus_key)
+            .cloned()
+            .ok_or_else(|| "the current focus is not present in the retained graph".to_string())?;
+        if previous.alive {
+            return Err("focus can be transferred after the current focus exits".into());
+        }
+        let candidate = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.key.id == process_key)
+            .cloned()
+            .ok_or_else(|| "the selected survivor is not present in this session".to_string())?;
+        if !candidate.alive {
+            return Err("the selected survivor is no longer running".into());
+        }
+        if !is_descendant(process_key, &snapshot.root_key, &snapshot.edges) {
+            return Err("the selected process is not a descendant of the current focus".into());
+        }
+
+        *focus_key = process_key.to_string();
+        apply_snapshot_focus(snapshot, process_key);
+        let promoted = snapshot.clone();
+        drop(latest);
+        drop(focus_key);
+
+        emit(
+            &control,
+            TrackingMessage::Event(event_for(
+                "focus-changed",
+                "info",
+                &candidate.key.id,
+                candidate.key.pid,
+                &candidate.comm,
+                format!(
+                    "Focus moved from {} (PID {}) to {} (PID {})",
+                    previous.comm, previous.key.pid, candidate.comm, candidate.key.pid
+                ),
+            )),
+        );
+        Ok(promoted)
     }
 
     pub fn is_recording_active(&self, session_id: &str) -> bool {
@@ -478,6 +557,10 @@ impl SessionControl {
         {
             return;
         }
+        self.record_tracking_message(message);
+    }
+
+    fn record_tracking_message(&self, message: &TrackingMessage) {
         let Ok(mut slot) = self.recording.lock() else {
             return;
         };
@@ -851,7 +934,6 @@ async fn run_session(
     boot: String,
     initial_scan: HashMap<i32, BasicProcess>,
     control: Arc<SessionControl>,
-    output: Channel<TrackingMessage>,
 ) {
     let users = passwd_map();
     let ticks_per_second = clock_ticks();
@@ -891,7 +973,6 @@ async fn run_session(
     }
 
     emit(
-        &output,
         &control,
         TrackingMessage::Event(event_for(
             "attached",
@@ -909,15 +990,16 @@ async fn run_session(
     loop {
         interval.tick().await;
         if control.cancelled.load(Ordering::Relaxed) {
+            let focus_key = current_focus_key(&control, &root_key);
+            let focus = known.get(&focus_key).map(|entry| &entry.node);
             emit(
-                &output,
                 &control,
                 TrackingMessage::Event(event_for(
                     "detached",
                     "info",
-                    &root_key,
-                    root.pid,
-                    &root.comm,
+                    &focus_key,
+                    focus.map(|node| node.key.pid).unwrap_or(root.pid),
+                    focus.map(|node| node.comm.as_str()).unwrap_or(&root.comm),
                     "Observation stopped".into(),
                 )),
             );
@@ -926,7 +1008,8 @@ async fn run_session(
 
         let scan = scan_processes();
         let now = Instant::now();
-        let current_by_pid = tracked_parent_index(&known);
+        let scope_root_key = current_focus_key(&control, &root_key);
+        let current_by_pid = tracked_parent_index(&known, &scope_root_key);
 
         let mut additions = Vec::new();
         for process in scan.values() {
@@ -960,7 +1043,6 @@ async fn run_session(
                 );
                 insert_edge(&mut edges, &parent_key, &key, "spawned");
                 emit(
-                    &output,
                     &control,
                     TrackingMessage::Event(event_for(
                         "spawn",
@@ -1014,11 +1096,14 @@ async fn run_session(
                     entry.node.cpu_percent = 0.0;
                     entry.node.exited_at = Some(Utc::now().to_rfc3339());
                     emit(
-                        &output,
                         &control,
                         TrackingMessage::Event(event_for(
                             "exit",
-                            if key == root_key { "warning" } else { "change" },
+                            if key == scope_root_key {
+                                "warning"
+                            } else {
+                                "change"
+                            },
                             &key,
                             entry.node.key.pid,
                             &entry.node.comm,
@@ -1046,7 +1131,6 @@ async fn run_session(
             if entry.node.comm != process.comm || executable_changed {
                 let before = entry.node.comm.clone();
                 emit(
-                    &output,
                     &control,
                     TrackingMessage::Event(event_for(
                         "exec",
@@ -1089,6 +1173,11 @@ async fn run_session(
         }
 
         sequence = sequence.saturating_add(1);
+        let focus_key = match control.focus_key.lock() {
+            Ok(focus) => focus,
+            Err(_) => break,
+        };
+        apply_known_focus(&mut known, &focus_key);
         let mut nodes = known
             .values()
             .map(|entry| entry.node.clone())
@@ -1101,14 +1190,16 @@ async fn run_session(
         });
         let mut graph_edges = edges.values().cloned().collect::<Vec<_>>();
         graph_edges.sort_by(|a, b| a.id.cmp(&b.id));
-        let root_alive = known.get(&root_key).is_some_and(|entry| entry.node.alive);
+        let root_alive = known
+            .get(focus_key.as_str())
+            .is_some_and(|entry| entry.node.alive);
         let alive_count = nodes.iter().filter(|node| node.alive).count();
         let exited_count = nodes.len().saturating_sub(alive_count);
         let snapshot = GraphSnapshot {
             session_id: session_id.clone(),
             sequence,
             timestamp: Utc::now().to_rfc3339(),
-            root_key: root_key.clone(),
+            root_key: focus_key.clone(),
             root_alive,
             alive_count,
             exited_count,
@@ -1116,19 +1207,18 @@ async fn run_session(
             edges: graph_edges,
             missed_event_warning: true,
         };
-        if !emit(&output, &control, TrackingMessage::Snapshot(snapshot)) {
+        if !emit(&control, TrackingMessage::Snapshot(snapshot)) {
             break;
         }
     }
 }
 
-fn emit(
-    output: &Channel<TrackingMessage>,
-    control: &SessionControl,
-    message: TrackingMessage,
-) -> bool {
+fn emit(control: &SessionControl, message: TrackingMessage) -> bool {
     control.record(&message);
-    output.send(message).is_ok()
+    control
+        .output
+        .as_ref()
+        .is_none_or(|output| output.send(message).is_ok())
 }
 
 fn initial_family(
@@ -1221,12 +1311,123 @@ fn make_node(
     }
 }
 
-fn tracked_parent_index(known: &HashMap<String, KnownProcess>) -> HashMap<i32, String> {
+fn current_focus_key(control: &SessionControl, fallback: &str) -> String {
+    control
+        .focus_key
+        .lock()
+        .map(|focus| focus.clone())
+        .unwrap_or_else(|_| fallback.to_string())
+}
+
+fn descendant_keys_from_nodes(
+    root_key: &str,
+    known: &HashMap<String, KnownProcess>,
+) -> HashSet<String> {
+    let mut scoped = HashSet::from([root_key.to_string()]);
+    loop {
+        let mut changed = false;
+        for (key, entry) in known {
+            if scoped.contains(key) {
+                continue;
+            }
+            if entry
+                .node
+                .parent_key
+                .as_ref()
+                .is_some_and(|parent| scoped.contains(parent))
+            {
+                scoped.insert(key.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            return scoped;
+        }
+    }
+}
+
+fn ancestor_keys_from_nodes(
+    focus_key: &str,
+    known: &HashMap<String, KnownProcess>,
+) -> HashSet<String> {
+    let mut ancestors = HashSet::new();
+    let mut cursor = known
+        .get(focus_key)
+        .and_then(|entry| entry.node.parent_key.clone());
+    while let Some(key) = cursor {
+        if !ancestors.insert(key.clone()) {
+            break;
+        }
+        cursor = known
+            .get(&key)
+            .and_then(|entry| entry.node.parent_key.clone());
+    }
+    ancestors
+}
+
+fn apply_known_focus(known: &mut HashMap<String, KnownProcess>, focus_key: &str) {
+    let ancestors = ancestor_keys_from_nodes(focus_key, known);
+    for (key, entry) in known {
+        entry.node.is_focus = key == focus_key;
+        entry.node.is_ancestor = ancestors.contains(key);
+    }
+}
+
+fn is_descendant(candidate_key: &str, root_key: &str, edges: &[GraphEdge]) -> bool {
+    let parents = edges
+        .iter()
+        .map(|edge| (edge.target.as_str(), edge.source.as_str()))
+        .collect::<HashMap<_, _>>();
+    let mut seen = HashSet::new();
+    let mut cursor = candidate_key;
+    while let Some(parent) = parents.get(cursor).copied() {
+        if parent == root_key {
+            return true;
+        }
+        if !seen.insert(parent) {
+            return false;
+        }
+        cursor = parent;
+    }
+    false
+}
+
+fn apply_snapshot_focus(snapshot: &mut GraphSnapshot, focus_key: &str) {
+    snapshot.root_key = focus_key.to_string();
+    snapshot.root_alive = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.key.id == focus_key)
+        .is_some_and(|node| node.alive);
+    let parents = snapshot
+        .edges
+        .iter()
+        .map(|edge| (edge.target.clone(), edge.source.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut ancestors = HashSet::new();
+    let mut cursor = parents.get(focus_key).cloned();
+    while let Some(key) = cursor {
+        if !ancestors.insert(key.clone()) {
+            break;
+        }
+        cursor = parents.get(&key).cloned();
+    }
+    for node in &mut snapshot.nodes {
+        node.is_focus = node.key.id == focus_key;
+        node.is_ancestor = ancestors.contains(&node.key.id);
+    }
+}
+
+fn tracked_parent_index(
+    known: &HashMap<String, KnownProcess>,
+    focus_key: &str,
+) -> HashMap<i32, String> {
+    let scoped = descendant_keys_from_nodes(focus_key, known);
     known
         .iter()
-        // Ancestors are context only. Following their other children would silently
-        // expand collection to unrelated sibling processes.
-        .filter(|(_, entry)| entry.node.alive && !entry.node.is_ancestor)
+        // Only the current focus subtree can expand the observation scope. Retained
+        // sibling branches stay available as evidence after a focus handoff.
+        .filter(|(key, entry)| entry.node.alive && scoped.contains(*key))
         .map(|(key, entry)| (entry.node.key.pid, key.clone()))
         .collect()
 }
@@ -1300,7 +1501,7 @@ fn event_for(
         pid,
         comm: comm.into(),
         message,
-        source: if matches!(kind, "attached" | "detached") {
+        source: if matches!(kind, "attached" | "detached" | "focus-changed") {
             "observer"
         } else if kind == "exit" {
             "procfs+pidfd"
@@ -1308,7 +1509,7 @@ fn event_for(
             "procfs-diff"
         }
         .into(),
-        confidence: if matches!(kind, "attached" | "detached") {
+        confidence: if matches!(kind, "attached" | "detached" | "focus-changed") {
             "exact"
         } else if kind == "exit" {
             "observed"
@@ -1380,20 +1581,112 @@ mod tests {
 
     #[test]
     fn only_live_focus_or_descendants_can_expand_scope() {
+        let focus = known(20, false, true);
+        let mut descendant = known(40, false, true);
+        descendant.node.parent_key = Some("focus".into());
         let entries = HashMap::from([
             ("ancestor".into(), known(10, true, true)),
-            ("focus".into(), known(20, false, true)),
+            ("focus".into(), focus),
             ("exited-descendant".into(), known(30, false, false)),
-            ("descendant".into(), known(40, false, true)),
+            ("descendant".into(), descendant),
         ]);
 
-        let parents = tracked_parent_index(&entries);
+        let parents = tracked_parent_index(&entries, "focus");
 
         assert_eq!(parents.len(), 2);
         assert_eq!(parents.get(&20).map(String::as_str), Some("focus"));
         assert_eq!(parents.get(&40).map(String::as_str), Some("descendant"));
         assert!(!parents.contains_key(&10));
         assert!(!parents.contains_key(&30));
+    }
+
+    #[test]
+    fn promotion_reroots_the_session_and_records_an_exact_event() {
+        let recording_root =
+            std::env::temp_dir().join(format!("process-stasis-test-{}", Uuid::new_v4()));
+        let state = TrackerState::new(recording_root.clone());
+        let session_id = Uuid::new_v4().to_string();
+        let root_key = "boot:20:10".to_string();
+        let child_key = "boot:40:10".to_string();
+        let mut root_node = known(20, false, false).node;
+        root_node.key.id = root_key.clone();
+        root_node.is_focus = true;
+        let mut child_node = known(40, false, true).node;
+        child_node.key.id = child_key.clone();
+        child_node.parent_key = Some(root_key.clone());
+        child_node.is_focus = false;
+        let edge = GraphEdge {
+            id: format!("{root_key}->{child_key}"),
+            source: root_key.clone(),
+            target: child_key.clone(),
+            relation: "spawned".into(),
+            observed_at: "2026-01-01T00:00:00Z".into(),
+            current: false,
+        };
+        let control = Arc::new(SessionControl {
+            cancelled: AtomicBool::new(false),
+            recording: Mutex::new(RecordingSlot::default()),
+            latest_snapshot: Mutex::new(Some(GraphSnapshot {
+                session_id: session_id.clone(),
+                sequence: 9,
+                timestamp: "2026-01-01T00:00:09Z".into(),
+                root_key: root_key.clone(),
+                root_alive: false,
+                alive_count: 1,
+                exited_count: 1,
+                nodes: vec![root_node, child_node],
+                edges: vec![edge],
+                missed_event_warning: true,
+            })),
+            focus_key: Mutex::new(root_key.clone()),
+            output: None,
+            target: SessionTarget {
+                key: ProcessKey {
+                    id: root_key.clone(),
+                    pid: 20,
+                    start_time_ticks: 10,
+                },
+                comm: "p20".into(),
+                command: "p20".into(),
+            },
+        });
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), control);
+        state
+            .start_recording(&session_id)
+            .expect("recording starts before promotion");
+
+        let promoted = state
+            .promote_focus(&session_id, &child_key)
+            .expect("living descendant becomes focus");
+
+        assert_eq!(promoted.root_key, child_key);
+        assert!(promoted.root_alive);
+        assert!(promoted
+            .nodes
+            .iter()
+            .find(|node| node.key.id == child_key)
+            .is_some_and(|node| node.is_focus));
+        assert!(promoted
+            .nodes
+            .iter()
+            .find(|node| node.key.id == root_key)
+            .is_some_and(|node| node.is_ancestor));
+        let capture = state.read_recording(&session_id).expect("journal reads");
+        let event = capture
+            .lifecycle_events
+            .iter()
+            .find(|event| event.kind == "focus-changed")
+            .expect("focus handoff is recorded");
+        assert_eq!(event.source, "observer");
+        assert_eq!(event.confidence, "exact");
+
+        let stopped = state.stop_recording(&session_id).expect("recording stops");
+        fs::remove_file(recording_root.join(stopped.file_name)).expect("journal removed");
+        fs::remove_dir(recording_root).expect("recording directory removed");
     }
 
     #[test]
@@ -1452,6 +1745,8 @@ mod tests {
             cancelled: AtomicBool::new(false),
             recording: Mutex::new(RecordingSlot::default()),
             latest_snapshot: Mutex::new(None),
+            focus_key: Mutex::new("boot:20:200".into()),
+            output: None,
             target: SessionTarget {
                 key: ProcessKey {
                     id: "boot:20:200".into(),
@@ -1552,6 +1847,8 @@ mod tests {
             cancelled: AtomicBool::new(false),
             recording: Mutex::new(RecordingSlot::default()),
             latest_snapshot: Mutex::new(None),
+            focus_key: Mutex::new("boot:20:200".into()),
+            output: None,
             target: SessionTarget {
                 key: ProcessKey {
                     id: "boot:20:200".into(),

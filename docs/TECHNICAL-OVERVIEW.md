@@ -1,7 +1,7 @@
 # Process Stasis technical overview
 
 This is the canonical technical introduction to the implemented Process Stasis
-`0.8.0` desktop application. It explains what runs, where data comes from, how a
+`0.8.1` desktop application. It explains what runs, where data comes from, how a
 PID becomes a retained process-family model, how freeze and resume work, where
 privilege begins and ends, how evidence is stored, and which capabilities do not
 exist yet.
@@ -126,6 +126,10 @@ When an operator attaches to a process:
    supported by pidfd state where available, produces an exit event.
 7. Exited nodes stay in the graph, and known descendants continue to be followed
    after the original focus process exits.
+8. The operator can promote one living descendant without creating a new
+   session. The tracker records an exact `focus-changed` event, re-roots future
+   snapshots, and limits new discovery to the promoted process subtree. Earlier
+   nodes, events, metrics, annotations, and journal entries remain intact.
 
 This creates a retained temporal family rather than repeatedly displaying the
 current `ps` tree.
@@ -207,9 +211,9 @@ trailing partial JSONL line, and reports the journal SHA-256.
 
 Exports are separate artifacts:
 
-- `process-stasis/session-v0.8` JSON contains case data, collector profile,
-  target identity, snapshots, events, inspections, control actions and known
-  limitations.
+- `process-stasis/session-v0.8.1` JSON contains case data, collector profile,
+  the initial target, the current focus at export time, snapshots, events,
+  inspections, control actions and known limitations.
 - HTML is a bounded escaped report rather than executable target content.
 - Normal exports redact environment values. Full environment export is a
   separate explicit operation.
@@ -350,7 +354,7 @@ repository's benign synthetic target on an authorized Linux host.
   designs.
 - It does not produce an automatic malicious/benign verdict.
 
-In short: `0.8.0` provides a useful live process-family observer, investigation
+In short: `0.8.1` provides a useful live process-family observer, investigation
 journal, and verified cgroup freeze/resume mechanism. It is not yet a malware
 sandbox or execution-replay platform.
 

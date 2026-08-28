@@ -138,3 +138,7 @@ checkpointed state to a fresh execution while calling it equivalent.
   resume, automatic journaling and frozen-state inspection, a stable incremental
   lineage layout, branch folding, bundled readable fonts, a role-based light
   palette, and a compact one-action Control workspace.
+- **0.8.1 — survivor focus transfer (complete):** promote a known living
+  descendant after focus exit, preserve the existing journal and timeline,
+  re-root graph/telemetry/control state, and record the handoff as an exact
+  observer event.

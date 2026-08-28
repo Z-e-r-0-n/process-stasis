@@ -31,6 +31,7 @@ experiment, but the replacement must record why.
 | D024 | Omit network controls until a working policy backend exists | A dead capability card adds noise and does not improve the investigation. |
 | D025 | Elevate only the bounded helper entry point through Polkit | Cgroup mutation needs root; the Tauri WebView and case workspace do not. |
 | D026 | Preserve graph coordinates and viewport across samples | Live evidence should update data, not repeatedly reset the investigator's spatial context. |
+| D027 | Transfer focus in place after focus exit | A surviving descendant should become the new observation and containment root without fragmenting one investigation across multiple journals. |
 
 ## Deferred choices
 

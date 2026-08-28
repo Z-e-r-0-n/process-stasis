@@ -5,8 +5,11 @@ it a PID and it builds a temporal family graph, streams resource telemetry,
 retains processes after exit, follows known surviving children, exposes deep
 procfs evidence, and exports a structured investigation session.
 
-Version `0.8.0` adds a root-only helper behind the unprivileged desktop. It can
-briefly stop and stabilize a visible process tree, move that tree into a
+Version `0.8.1` adds in-place focus transfer: after the current focus exits, any
+known living descendant can become the new focus without splitting the session,
+journal, or timeline. The `0.8` line also adds a root-only helper behind the
+unprivileged desktop. It can briefly stop and stabilize a visible process tree,
+move that tree into a
 dedicated cgroup v2, freeze or resume it, and verify the resulting kernel state.
 It can also launch a command inside a dedicated group from birth. The WebView
 itself does not run as root.
@@ -20,7 +23,8 @@ itself does not run as root.
    process and its descendants.
 4. Sample the known family every 500 ms, use pidfds for exit identity where
    permitted, and label inferred spawn/exec lifecycle events by source and confidence.
-5. Preserve exited nodes and follow known live descendants after focus-process exit.
+5. Preserve exited nodes, follow known live descendants after focus-process exit,
+   and promote a selected survivor as the new tracking and containment focus.
 6. Inspect status, executable hash and filesystem metadata, observer-relative
    namespace differences, descriptors, sockets, maps, I/O, cgroups, limits,
    security context, and masked environment values.

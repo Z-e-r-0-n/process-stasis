@@ -1,6 +1,6 @@
 [package]
 name = "process-stasis"
-version = "0.8.0"
+version = "0.8.1"
 description = "Live Linux process intelligence"
 authors = ["Process Stasis contributors"]
 edition = "2021"

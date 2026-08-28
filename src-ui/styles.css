@@ -199,15 +199,19 @@ code, pre, kbd { font-family: "JetBrains Mono Variable", "Cascadia Code", monosp
 .graph-loading strong { font-size: 14px; }
 .graph-loading small { color: var(--faint); font-size: 11px; }
 .graph-footer { padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-top: 1px solid var(--line); background: white; }
-.graph-footer > div { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 10px; }
-.graph-footer > div span { display: flex; align-items: center; gap: 5px; }
+.graph-counts { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 10px; }
+.graph-counts span { display: flex; align-items: center; gap: 5px; }
 .graph-footer i { width: 7px; height: 7px; border-radius: 50%; background: #9ea3ad; }
 .graph-footer i.live { background: var(--primary); }
-.graph-footer > button { min-width: 235px; padding: 8px 10px 8px 12px; display: flex; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fafafa; color: var(--primary); font-size: 10px; font-weight: 650; cursor: pointer; }
-.graph-footer > button > span { min-width: 0; margin-right: auto; display: grid; text-align: left; }
-.graph-footer > button strong { color: var(--text); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.graph-footer > button small { margin-top: 2px; color: var(--muted); font-size: 9px; }
-.graph-footer > button svg { width: 15px; height: 15px; }
+.graph-selection-actions { display: flex; align-items: stretch; gap: 7px; }
+.graph-selection-actions button { min-height: 40px; padding: 7px 10px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: 8px; font-size: 10px; font-weight: 680; cursor: pointer; }
+.graph-selection-actions button:disabled { opacity: .6; cursor: wait; }
+.inspect-selection { min-width: 210px; background: #fafafa; color: var(--primary); }
+.inspect-selection > span { min-width: 0; margin-right: auto; display: grid; text-align: left; }
+.inspect-selection strong { max-width: 115px; color: var(--text); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.inspect-selection small { margin-top: 2px; color: var(--muted); font-size: 9px; }
+.graph-selection-actions svg { width: 15px; height: 15px; }
+.promote-selection { background: var(--primary); border-color: var(--primary) !important; color: white; }
 
 /* Activity */
 .activity-view { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(420px, 1.08fr) minmax(440px, .92fr); gap: 16px; }

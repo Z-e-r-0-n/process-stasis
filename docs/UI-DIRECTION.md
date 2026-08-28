@@ -30,8 +30,9 @@ complexity only when the operator asks for it.
 - **Control:** one acquire/freeze or resume action, a three-state progress line,
   managed members, and disclosed technical state.
 
-Exited nodes stay available. If the focus exits, offer a direct route to a known
-living descendant. The collection continues independently from a paused graph.
+Exited nodes stay available. If the focus exits, let the operator select a known
+living descendant and make it the focus without splitting the session. The
+collection continues independently from a paused graph.
 
 ## Interaction rules
 

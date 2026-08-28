@@ -72,7 +72,7 @@ export function ProcessPicker({ onSelect, onLaunch, sessions, openingSession, on
     <div className="picker-screen" ref={root}>
       <header className="picker-header reveal">
         <div className="wordmark"><span className="brand-glyph"><ShieldChevron weight="fill" /></span><span>Process Stasis<small>Linux process observer</small></span></div>
-        <span className="version-badge">0.8</span>
+        <span className="version-badge">0.8.1</span>
       </header>
 
       <main className="picker-content">

@@ -6,9 +6,9 @@ mod types;
 
 use crate::tracker::TrackerState;
 use crate::types::{
-    CaseMetadata, CollectorProfile, ContainmentOutcome, ContainmentStatus, InspectionCapture,
-    ProcessDetails, ProcessListItem, RecordedCapture, RecordingInfo, SessionSummary,
-    SystemOverview, TrackingMessage,
+    CaseMetadata, CollectorProfile, ContainmentOutcome, ContainmentStatus, GraphSnapshot,
+    InspectionCapture, ProcessDetails, ProcessListItem, RecordedCapture, RecordingInfo,
+    SessionSummary, SystemOverview, TrackingMessage,
 };
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -55,6 +55,15 @@ fn start_tracking(
 #[tauri::command]
 fn stop_tracking(session_id: String, state: State<'_, TrackerState>) -> bool {
     state.stop(&session_id)
+}
+
+#[tauri::command]
+fn promote_tracking_focus(
+    session_id: String,
+    process_key: String,
+    state: State<'_, TrackerState>,
+) -> Result<GraphSnapshot, String> {
+    state.promote_focus(&session_id, &process_key)
 }
 
 #[tauri::command]
@@ -225,6 +234,7 @@ pub fn run() {
             launch_under_stasis,
             start_tracking,
             stop_tracking,
+            promote_tracking_focus,
             start_recording,
             stop_recording,
             read_recording,
